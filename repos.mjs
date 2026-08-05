@@ -124,6 +124,9 @@ function verify(repos) {
 // ECOSYSTEM.md is duplicated by hand across kin repos. Identical copies drift the
 // first time one is edited, and nobody notices. This catches it.
 function sync(repos) {
+  // Keyed by cluster + filename, not filename alone: two unrelated clusters can
+  // each declare a same-named canon (e.g. two different ECOSYSTEM.md constitutions)
+  // without being flagged as drift against each other.
   const byCanon = {};
   for (const r of repos) {
     const canon = (r.m?.canon || '').split(' ')[0];
@@ -131,18 +134,20 @@ function sync(repos) {
     const p = path.join(r.dir, canon);
     if (!fs.existsSync(p)) { console.log(`${C.r}✗${C.x} ${r.name}: canon ${canon} declared but missing`); continue; }
     const hash = crypto.createHash('md5').update(fs.readFileSync(p)).digest('hex');
-    (byCanon[canon] = byCanon[canon] || []).push({ repo: r.name, hash, path: p });
+    const key = `${r.m?.cluster || '(no cluster)'} :: ${canon}`;
+    (byCanon[key] = byCanon[key] || []).push({ repo: r.name, hash, path: p, canon });
   }
   if (!Object.keys(byCanon).length) { console.log('no shared canon files declared'); return 0; }
 
   let drift = 0;
-  for (const [canon, copies] of Object.entries(byCanon)) {
+  for (const [key, copies] of Object.entries(byCanon)) {
+    const canon = copies[0].canon;
     const hashes = new Set(copies.map(c => c.hash));
     if (hashes.size === 1) {
-      console.log(`${C.g}✓${C.x} ${canon}  in sync across ${copies.length} repos  ${C.d}${[...hashes][0].slice(0,8)}${C.x}`);
+      console.log(`${C.g}✓${C.x} ${canon}  [${key.split(' :: ')[0]}]  in sync across ${copies.length} repos  ${C.d}${[...hashes][0].slice(0,8)}${C.x}`);
     } else {
       drift++;
-      console.log(`${C.r}✗${C.x} ${canon}  ${C.r}DRIFTED${C.x} across ${copies.length} repos`);
+      console.log(`${C.r}✗${C.x} ${canon}  [${key.split(' :: ')[0]}]  ${C.r}DRIFTED${C.x} across ${copies.length} repos`);
       const newest = copies.map(c => ({ ...c, mtime: fs.statSync(c.path).mtimeMs }))
         .sort((a, b) => b.mtime - a.mtime)[0];
       copies.forEach(c => console.log(`    ${c.hash.slice(0,8)}  ${c.repo}${c.repo === newest.repo ? `  ${C.y}(newest)${C.x}` : ''}`));
