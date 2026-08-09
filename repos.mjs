@@ -17,6 +17,12 @@ const args = process.argv.slice(2);
 const cmd = args[0] || 'verify';
 const rootIdx = args.indexOf('--root');
 const ROOT = rootIdx > -1 ? args[rootIdx + 1] : process.cwd();
+const depthIdx = args.indexOf('--depth');
+// Default 1 matches the tool's original behavior exactly: only immediate
+// subdirectories of --root are scanned. Raise it to see a hub manifest
+// (e.g. Aether/repos.yaml) and nested project manifests in one run.
+const DEPTH = depthIdx > -1 ? parseInt(args[depthIdx + 1], 10) : 1;
+const SKIP_DIRS = new Set(['node_modules', '.git', '.next', 'dist', 'build', '.turbo', '.vercel']);
 
 const C = process.stdout.isTTY
   ? { r:'\x1b[31m', g:'\x1b[32m', y:'\x1b[33m', d:'\x1b[2m', b:'\x1b[1m', x:'\x1b[0m' }
@@ -64,18 +70,37 @@ const scalar = v => {
 };
 
 /* ---------- discovery ---------------------------------------------------- */
-function findManifests(root) {
-  const found = [];
+// Walks `remaining` levels below `dir` looking for repos.yaml in each
+// subdirectory. remaining=1 (the default) is the tool's original behavior:
+// only immediate children of --root. remaining>1 descends further, so a
+// hub-level manifest (Aether/repos.yaml) and nested project manifests can
+// be verified together -- previously a documented, unfixed gap.
+function walk(dir, remaining, found) {
   let entries = [];
-  try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch { return found; }
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
   for (const e of entries) {
-    if (!e.isDirectory() || e.name.startsWith('.') || e.name === 'node_modules') continue;
-    const p = path.join(root, e.name, 'repos.yaml');
+    if (!e.isDirectory() || e.name.startsWith('.') || SKIP_DIRS.has(e.name)) continue;
+    const sub = path.join(dir, e.name);
+    const p = path.join(sub, 'repos.yaml');
     if (fs.existsSync(p)) {
-      try { found.push({ dir: path.join(root, e.name), name: e.name, m: parseManifest(fs.readFileSync(p, 'utf8')) }); }
-      catch (err) { found.push({ dir: path.join(root, e.name), name: e.name, err: err.message }); }
+      try { found.push({ dir: sub, name: e.name, m: parseManifest(fs.readFileSync(p, 'utf8')) }); }
+      catch (err) { found.push({ dir: sub, name: e.name, err: err.message }); }
     }
+    if (remaining > 1) walk(sub, remaining - 1, found);
   }
+}
+function findManifests(root, depth = 1) {
+  const found = [];
+  // The root itself can carry a manifest (a hub repos.yaml describing the
+  // workspace, e.g. Aether/repos.yaml) -- previously never checked, only
+  // its subdirectories were.
+  const hubPath = path.join(root, 'repos.yaml');
+  if (fs.existsSync(hubPath)) {
+    const name = path.basename(path.resolve(root));
+    try { found.push({ dir: root, name, m: parseManifest(fs.readFileSync(hubPath, 'utf8')) }); }
+    catch (err) { found.push({ dir: root, name, err: err.message }); }
+  }
+  walk(root, depth, found);
   return found;
 }
 
@@ -103,11 +128,14 @@ function verify(repos) {
       else { problems.push(`${id}: claims ${at}, which does not exist`); broken++; }
     }
 
+    const seenKin = new Set();
     for (const k of (m.kin || [])) {
       const kr = typeof k === 'object' ? k.repo : String(k);
       const why = typeof k === 'object' ? k.why : null;
       if (!why) { notes.push(`kin ${kr}: no "why" (an edge without a reason teaches an agent nothing)`); }
       if (!names.has(kr)) notes.push(`kin ${kr}: no manifest found in this workspace`);
+      if (seenKin.has(kr)) notes.push(`kin ${kr}: listed more than once`);
+      seenKin.add(kr);
     }
 
     const icon = problems.length ? `${C.r}✗${C.x}` : notes.length ? `${C.y}!${C.x}` : `${C.g}✓${C.x}`;
@@ -175,7 +203,7 @@ function graph(repos) {
 }
 
 /* ---------- run ---------------------------------------------------------- */
-const repos = findManifests(ROOT);
+const repos = findManifests(ROOT, DEPTH);
 if (!repos.length) {
   console.log(`no repos.yaml found under ${ROOT}`);
   process.exit(0);
