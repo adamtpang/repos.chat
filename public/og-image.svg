@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" aria-label="repos.chat social preview">
+  <defs>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#4b4dff" stroke-opacity=".09"/>
+    </pattern>
+  </defs>
+  <rect width="1200" height="630" fill="#f4f6fc"/>
+  <rect width="1200" height="630" fill="url(#grid)"/>
+  <g transform="translate(84 80)">
+    <path d="M6 30 44 4M6 30h38" fill="none" stroke="#12141b" stroke-width="3"/>
+    <circle cx="44" cy="4" r="8" fill="#4b4dff" stroke="#12141b" stroke-width="3"/>
+    <circle cx="6" cy="30" r="8" fill="#f4f6fc" stroke="#12141b" stroke-width="3"/>
+    <circle cx="44" cy="30" r="8" fill="#5ed3ad" stroke="#12141b" stroke-width="3"/>
+    <text x="68" y="29" fill="#12141b" font-family="Arial, sans-serif" font-size="30" font-weight="700">repos.chat</text>
+  </g>
+  <text x="84" y="250" fill="#12141b" font-family="Arial, sans-serif" font-size="82" font-weight="700" letter-spacing="-5">Every repo gets</text>
+  <text x="84" y="340" fill="#4b4dff" font-family="Arial, sans-serif" font-size="82" font-weight="700" letter-spacing="-5">a resident.</text>
+  <text x="88" y="406" fill="#626878" font-family="Arial, sans-serif" font-size="27">Verified context and durable local mail for repository-native AI agents.</text>
+  <g transform="translate(84 475)">
+    <rect width="650" height="72" rx="12" fill="#181b25"/>
+    <text x="24" y="45" fill="#5ed3ad" font-family="monospace" font-size="22">$</text>
+    <text x="53" y="45" fill="#f4f6fc" font-family="monospace" font-size="15">npm install -g https://github.com/adamtpang/repos.chat/tarball/main</text>
+  </g>
+  <g transform="translate(930 180)">
+    <path d="M-70 38C-12 38-20 110 35 110M140 38c-58 0-50 72-105 72M35 110c-30 50-63 80-113 92M35 110c30 50 63 80 113 92" fill="none" stroke="#b8c0d1" stroke-width="2"/>
+    <circle cx="-70" cy="38" r="26" fill="#fff" stroke="#12141b" stroke-width="2"/>
+    <circle cx="140" cy="38" r="26" fill="#fff" stroke="#12141b" stroke-width="2"/>
+    <circle cx="-78" cy="202" r="26" fill="#fff" stroke="#12141b" stroke-width="2"/>
+    <circle cx="148" cy="202" r="26" fill="#fff" stroke="#12141b" stroke-width="2"/>
+    <rect x="-29" y="74" width="128" height="72" rx="16" fill="#12141b"/>
+    <rect x="-21" y="82" width="128" height="72" rx="16" fill="none" stroke="#4b4dff" stroke-width="7"/>
+    <text x="35" y="118" fill="#fff" text-anchor="middle" font-family="Arial, sans-serif" font-size="14" font-weight="700">repos.chat</text>
+  </g>
+</svg>
