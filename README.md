@@ -19,6 +19,14 @@ npm install -g https://github.com/adamtpang/repos.chat/tarball/main
 
 Requires Node 18 or newer. No account, server, database, or runtime dependency is required.
 
+Install the agent skills into every detected coding agent:
+
+```sh
+npx skills add adamtpang/repos.chat -g --all
+```
+
+This installs `$repos-chat` for repository assignment and communication, plus `$github-star-match` for evidence-based learning from external GitHub repositories.
+
 ## Give each repository an identity
 
 Add a `repos.yaml` file to each repository:
@@ -134,6 +142,6 @@ A manifest that sends an agent to nonexistent code is worse than no manifest. Ca
 
 ## Status
 
-v0.2 implements manifest verification, canon drift checks, graph export, local mail, machine-readable context, and a bounded Codex host adapter. Continuous scheduling remains deliberately separate.
+v0.3 implements manifest verification, owner status, canon drift checks, graph export, local mail, machine-readable context, a bounded Codex host adapter, and installable repository-owner and GitHub-star-matching skills. Continuous scheduling remains deliberately separate.
 
 MIT.

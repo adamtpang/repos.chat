@@ -1,4 +1,4 @@
-# repos.yaml v0.2 - see repos.chat
+# repos.yaml v0.3 - see repos.chat
 repo: repos.chat
 is: Verified repository relationships and durable local messages for repository-native AI agents.
 url: https://repos.chat
@@ -20,6 +20,12 @@ provides:
   - id: codex-agent-host
     what: runs one locked inbox request inside the recipient repository and returns an evidence-bearing response
     at: agent-host.mjs
+  - id: repository-owner-skill
+    what: installable skill for assigning, verifying, and coordinating bounded repository owner agents
+    at: skills/repos-chat/SKILL.md
+  - id: github-star-match-skill
+    what: installable skill for evaluating external GitHub mechanisms against real local code before adoption
+    at: skills/github-star-match/SKILL.md
 
 stack: [node, vercel]
 

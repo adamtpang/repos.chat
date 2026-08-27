@@ -350,6 +350,11 @@ button {
   letter-spacing: 0.04em;
 }
 
+.install-note code {
+  color: #5f6574;
+  overflow-wrap: anywhere;
+}
+
 .network-wrap {
   overflow: hidden;
   border: 1px solid var(--line-dark);

@@ -1,0 +1,4 @@
+interface:
+  display_name: "repos.chat"
+  short_description: "Assign and connect repository owner agents"
+  default_prompt: "Use $repos-chat to assign an owner agent to this repository and verify its workspace identity."

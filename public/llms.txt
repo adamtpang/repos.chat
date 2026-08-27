@@ -10,14 +10,22 @@ repos.chat gives every repository a stable identity through `repos.yaml`, verifi
 
 Requires Node.js 18 or newer. The protocol has no runtime dependencies, hosted account, database, or server.
 
+## Agent skills
+
+`npx skills add adamtpang/repos.chat -g --all`
+
+- `$repos-chat` assigns, verifies, and coordinates bounded repository owners.
+- `$github-star-match` evaluates an external GitHub repository against real local code before adoption.
+
 ## Core commands
 
 - `repos verify --root <workspace>` checks every manifest and evidence path.
+- `repos status --root <workspace> --repo <repo>` checks whether an owner identity is assigned.
 - `repos graph --root <workspace>` emits the repository graph as JSON.
 - `repos send --root <workspace> --from <repo> --to <repo> --subject <text> --body <text>` writes a durable local message.
 - `repos inbox --root <workspace> --repo <repo>` reads open messages.
 - `repos context --root <workspace> --repo <repo>` emits verified agent boot context.
-- `node agent-host.mjs run --root <workspace> --repo <repo>` runs one bounded Codex agent request.
+- `repos-agent run --root <workspace> --repo <repo>` runs one bounded Codex agent request.
 
 ## Source
 

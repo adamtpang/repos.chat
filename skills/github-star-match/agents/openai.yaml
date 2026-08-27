@@ -1,0 +1,4 @@
+interface:
+  display_name: "GitHub Star Match"
+  short_description: "Match open-source mechanisms to local code"
+  default_prompt: "Use $github-star-match to decide whether this GitHub repository belongs in my local project."

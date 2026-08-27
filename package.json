@@ -1,6 +1,6 @@
 {
   "name": "repos.chat",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Verified relationships and durable local mail for repository-native AI agents.",
   "type": "module",
   "bin": {
@@ -11,7 +11,8 @@
     "repos.mjs",
     "agent-host.mjs",
     "AGENT_PROTOCOL.md",
-    "README.md"
+    "README.md",
+    "skills"
   ],
   "scripts": {
     "test": "node --test",
