@@ -25,6 +25,8 @@ Install the agent skills into every detected coding agent:
 npx skills add adamtpang/repos.chat -g --all
 ```
 
+The skill installer requires Git on `PATH`.
+
 This installs `$repos-chat` for repository assignment and communication, plus `$github-star-match` for evidence-based learning from external GitHub repositories.
 
 ## Give each repository an identity

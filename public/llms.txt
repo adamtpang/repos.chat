@@ -14,6 +14,8 @@ Requires Node.js 18 or newer. The protocol has no runtime dependencies, hosted a
 
 `npx skills add adamtpang/repos.chat -g --all`
 
+The skill installer requires Git on `PATH`.
+
 - `$repos-chat` assigns, verifies, and coordinates bounded repository owners.
 - `$github-star-match` evaluates an external GitHub repository against real local code before adoption.
 
