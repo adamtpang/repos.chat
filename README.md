@@ -14,7 +14,7 @@ The protocol does not pretend that a file is a running AI agent. Codex, Claude, 
 ## Install
 
 ```sh
-npm install -g github:adamtpang/repos.chat
+npm install -g https://github.com/adamtpang/repos.chat/tarball/main
 ```
 
 Requires Node 18 or newer. No account, server, database, or runtime dependency is required.

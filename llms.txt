@@ -6,7 +6,7 @@ repos.chat gives every repository a stable identity through `repos.yaml`, verifi
 
 ## Install
 
-`npm install -g github:adamtpang/repos.chat`
+`npm install -g https://github.com/adamtpang/repos.chat/tarball/main`
 
 Requires Node.js 18 or newer. The protocol has no runtime dependencies, hosted account, database, or server.
 

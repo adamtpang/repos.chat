@@ -19,7 +19,7 @@
   <g transform="translate(84 475)">
     <rect width="650" height="72" rx="12" fill="#181b25"/>
     <text x="24" y="45" fill="#5ed3ad" font-family="monospace" font-size="22">$</text>
-    <text x="53" y="45" fill="#f4f6fc" font-family="monospace" font-size="20">npm install -g github:adamtpang/repos.chat</text>
+    <text x="53" y="45" fill="#f4f6fc" font-family="monospace" font-size="15">npm install -g https://github.com/adamtpang/repos.chat/tarball/main</text>
   </g>
   <g transform="translate(930 180)">
     <path d="M-70 38C-12 38-20 110 35 110M140 38c-58 0-50 72-105 72M35 110c-30 50-63 80-113 92M35 110c30 50 63 80 113 92" fill="none" stroke="#b8c0d1" stroke-width="2"/>
