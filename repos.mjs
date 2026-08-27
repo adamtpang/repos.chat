@@ -5,6 +5,10 @@
 //   node repos.mjs verify [--root DIR]   check every manifest's claims against real code
 //   node repos.mjs sync   [--root DIR]   detect drift in shared canon files across kin
 //   node repos.mjs graph  [--root DIR]   emit the repo graph as JSON
+//   node repos.mjs send   [options]      send a durable local message between repos
+//   node repos.mjs inbox  [options]      read one repo's open messages
+//   node repos.mjs ack    [options]      acknowledge a message without deleting it
+//   node repos.mjs context [options]     emit the verified context an agent host needs
 //
 // Why this exists: a manifest that points an agent at code which does not exist is
 // worse than no manifest at all. Claims rot silently. This makes them fail loudly.
@@ -23,6 +27,12 @@ const depthIdx = args.indexOf('--depth');
 // (e.g. Aether/repos.yaml) and nested project manifests in one run.
 const DEPTH = depthIdx > -1 ? parseInt(args[depthIdx + 1], 10) : 1;
 const SKIP_DIRS = new Set(['node_modules', '.git', '.next', 'dist', 'build', '.turbo', '.vercel']);
+
+const option = name => {
+  const i = args.indexOf(`--${name}`);
+  return i > -1 ? args[i + 1] : null;
+};
+const hasFlag = name => args.includes(`--${name}`);
 
 const C = process.stdout.isTTY
   ? { r:'\x1b[31m', g:'\x1b[32m', y:'\x1b[33m', d:'\x1b[2m', b:'\x1b[1m', x:'\x1b[0m' }
@@ -202,12 +212,191 @@ function graph(repos) {
   return 0;
 }
 
+/* ---------- agent mail -------------------------------------------------- */
+// repos.chat is the transport, not the agent host. Messages live under the
+// workspace root so Codex, Claude, CI, or another host can all consume the same
+// durable inbox without a server or provider-specific API.
+const MAIL_ROOT = path.join(ROOT, '.repo-connect', 'mail');
+const MESSAGE_KINDS = new Set(['request', 'response', 'notice']);
+
+function repoId(r) {
+  return r.m?.repo || r.name;
+}
+
+function findRepo(repos, id) {
+  return repos.find(r => repoId(r) === id || r.name === id);
+}
+
+function safeRepoId(id) {
+  return typeof id === 'string' && /^[A-Za-z0-9._-]+$/.test(id);
+}
+
+function safeMessageId(id) {
+  return typeof id === 'string' && /^[A-Za-z0-9_-]+$/.test(id);
+}
+
+function messagePath(to, id) {
+  return path.join(MAIL_ROOT, to, `${id}.json`);
+}
+
+function readInbox(repo, includeAcknowledged = false) {
+  const dir = path.join(MAIL_ROOT, repo);
+  let names = [];
+  try { names = fs.readdirSync(dir).filter(name => name.endsWith('.json')); } catch { return []; }
+  const messages = [];
+  for (const name of names) {
+    try {
+      const message = JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8'));
+      if (includeAcknowledged || !message.acknowledgedAt) messages.push(message);
+    } catch {
+      // A corrupt message should not make every other message unreadable.
+    }
+  }
+  return messages.sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+}
+
+function send(repos) {
+  const from = option('from');
+  const to = option('to');
+  const subject = option('subject');
+  const bodyFile = option('body-file');
+  let body = option('body');
+  const kind = option('kind') || 'request';
+  const replyTo = option('reply-to');
+
+  if (!safeRepoId(from) || !safeRepoId(to)) {
+    console.error('send requires safe --from and --to repo ids');
+    return 1;
+  }
+  if (!findRepo(repos, from) || !findRepo(repos, to)) {
+    console.error('send requires --from and --to to match verified manifests in this workspace');
+    return 1;
+  }
+  if (!subject) {
+    console.error('send requires --subject');
+    return 1;
+  }
+  if (!MESSAGE_KINDS.has(kind)) {
+    console.error(`send --kind must be one of: ${[...MESSAGE_KINDS].join(', ')}`);
+    return 1;
+  }
+  if (bodyFile) {
+    try { body = fs.readFileSync(path.resolve(bodyFile), 'utf8'); }
+    catch (err) { console.error(`could not read --body-file: ${err.message}`); return 1; }
+  }
+  if (!body) {
+    console.error('send requires --body or --body-file');
+    return 1;
+  }
+
+  const createdAt = new Date().toISOString();
+  const stamp = createdAt.replace(/[-:.]/g, '');
+  const id = `${stamp}-${crypto.randomBytes(4).toString('hex')}`;
+  const message = {
+    version: 1,
+    id,
+    from,
+    to,
+    kind,
+    subject,
+    body,
+    createdAt,
+    ...(replyTo ? { replyTo } : {}),
+  };
+
+  const dest = messagePath(to, id);
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  const temp = `${dest}.${process.pid}.tmp`;
+  fs.writeFileSync(temp, `${JSON.stringify(message, null, 2)}\n`, 'utf8');
+  fs.renameSync(temp, dest);
+  console.log(JSON.stringify({ ok: true, message }, null, 2));
+  return 0;
+}
+
+function inbox(repos) {
+  const repo = option('repo');
+  if (!safeRepoId(repo) || !findRepo(repos, repo)) {
+    console.error('inbox requires --repo matching a verified manifest');
+    return 1;
+  }
+  const messages = readInbox(repo, hasFlag('all'));
+  if (hasFlag('json')) {
+    console.log(JSON.stringify({ repo, messages }, null, 2));
+    return 0;
+  }
+  if (!messages.length) {
+    console.log(`no ${hasFlag('all') ? '' : 'open '}messages for ${repo}`);
+    return 0;
+  }
+  for (const message of messages) {
+    const state = message.acknowledgedAt ? 'acknowledged' : 'open';
+    console.log(`${message.id}  ${message.kind}  ${state}  from ${message.from}`);
+    console.log(`    ${message.subject}`);
+  }
+  return 0;
+}
+
+function acknowledge(repos) {
+  const repo = option('repo');
+  const id = option('id');
+  if (!safeRepoId(repo) || !findRepo(repos, repo) || !safeMessageId(id)) {
+    console.error('ack requires --repo matching a verified manifest and --id');
+    return 1;
+  }
+  const dest = messagePath(repo, id);
+  let message;
+  try { message = JSON.parse(fs.readFileSync(dest, 'utf8')); }
+  catch { console.error(`message not found: ${id}`); return 1; }
+  if (message.to !== repo) {
+    console.error(`message ${id} does not belong to ${repo}`);
+    return 1;
+  }
+  if (!message.acknowledgedAt) message.acknowledgedAt = new Date().toISOString();
+  const temp = `${dest}.${process.pid}.tmp`;
+  fs.writeFileSync(temp, `${JSON.stringify(message, null, 2)}\n`, 'utf8');
+  fs.renameSync(temp, dest);
+  console.log(JSON.stringify({ ok: true, message }, null, 2));
+  return 0;
+}
+
+function context(repos) {
+  const id = option('repo');
+  const current = safeRepoId(id) ? findRepo(repos, id) : null;
+  if (!current) {
+    console.error('context requires --repo matching a verified manifest');
+    return 1;
+  }
+  const kinIds = (current.m?.kin || []).map(k => typeof k === 'object' ? k.repo : String(k));
+  const kin = kinIds.map(kinId => {
+    const related = findRepo(repos, kinId);
+    return related
+      ? { repo: repoId(related), is: related.m?.is, provides: related.m?.provides || [] }
+      : { repo: kinId, unavailable: true };
+  });
+  console.log(JSON.stringify({
+    protocol: 'repo-connect/agent-context/v1',
+    generatedAt: new Date().toISOString(),
+    repo: { id: repoId(current), path: current.dir, manifest: current.m },
+    kin,
+    inbox: readInbox(repoId(current)),
+  }, null, 2));
+  return 0;
+}
+
 /* ---------- run ---------------------------------------------------------- */
 const repos = findManifests(ROOT, DEPTH);
 if (!repos.length) {
   console.log(`no repos.yaml found under ${ROOT}`);
   process.exit(0);
 }
-console.log(`${C.d}${repos.length} manifests under ${ROOT}${C.x}\n`);
-const code = cmd === 'sync' ? sync(repos) : cmd === 'graph' ? graph(repos) : verify(repos);
+if (!['send', 'inbox', 'ack', 'context'].includes(cmd)) {
+  console.log(`${C.d}${repos.length} manifests under ${ROOT}${C.x}\n`);
+}
+const code = cmd === 'sync' ? sync(repos)
+  : cmd === 'graph' ? graph(repos)
+  : cmd === 'send' ? send(repos)
+  : cmd === 'inbox' ? inbox(repos)
+  : cmd === 'ack' ? acknowledge(repos)
+  : cmd === 'context' ? context(repos)
+  : verify(repos);
 process.exit(code);

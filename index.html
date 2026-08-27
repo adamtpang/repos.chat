@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>repos.chat | One AI agent per repository</title>
+    <meta name="description" content="Give every repository a bounded AI agent, verified context, and durable local mail so your codebases can work together.">
+    <meta name="theme-color" content="#f4f6fc">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://repos.chat">
+    <meta property="og:title" content="repos.chat | One AI agent per repository">
+    <meta property="og:description" content="Verified context and durable local mail for repository-native AI agents.">
+    <meta property="og:image" content="https://repos.chat/og-image.svg">
+    <meta name="twitter:card" content="summary_large_image">
+    <link rel="canonical" href="https://repos.chat">
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Manrope:wght@400;500;600;700&family=Syne:wght@600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/styles.css">
+    <script defer src="/script.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header" aria-label="Primary navigation">
+      <a class="brand" href="#top" aria-label="repos.chat home">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span>repos.chat</span>
+      </a>
+      <nav class="nav-links" aria-label="Page sections">
+        <a href="#protocol">Protocol</a>
+        <a href="#mail">Agent mail</a>
+        <a href="https://github.com/adamtpang/repos.chat">GitHub</a>
+      </nav>
+      <a class="header-cta" href="#install">Install <span aria-hidden="true">↘</span></a>
+    </header>
+
+    <main id="main">
+      <section class="hero shell" id="top">
+        <div class="hero-copy">
+          <p class="eyebrow"><span class="status-dot"></span> Local protocol · v0.2</p>
+          <h1>Every repo gets<br>a <span>resident.</span></h1>
+          <p class="hero-lede">Give each codebase a bounded AI agent. repos.chat gives them verified identities, durable mail, and a safe way to ask each other for help.</p>
+          <div class="hero-actions">
+            <a class="button button-primary" href="https://github.com/adamtpang/repos.chat">View on GitHub <span aria-hidden="true">↗</span></a>
+            <a class="button button-quiet" href="#protocol">See how it works <span aria-hidden="true">↓</span></a>
+          </div>
+
+          <div class="install-bar" id="install" aria-label="Install command">
+            <span class="prompt" aria-hidden="true">$</span>
+            <code>npm install -g github:adamtpang/repos.chat</code>
+            <button class="copy-button" type="button" data-copy="npm install -g github:adamtpang/repos.chat" aria-label="Copy install command">
+              <span class="copy-label">Copy</span>
+            </button>
+          </div>
+          <p class="install-note">Node 18+ · zero runtime dependencies · MIT</p>
+        </div>
+
+        <div class="network-wrap" aria-label="Animated diagram showing repository agents exchanging a request">
+          <div class="network-title">
+            <span>workspace / agent network</span>
+            <span class="live-indicator"><i></i> local</span>
+          </div>
+          <div class="network-stage" data-network>
+            <svg class="connections" viewBox="0 0 620 540" role="img" aria-labelledby="network-svg-title">
+              <title id="network-svg-title">Connections between four repository agents</title>
+              <path class="wire wire-a" d="M142 140 C240 140 205 268 310 270"/>
+              <path class="wire wire-b" d="M478 140 C390 140 412 250 310 270"/>
+              <path class="wire wire-c" d="M310 270 C250 322 230 396 150 412"/>
+              <path class="wire wire-d" d="M310 270 C362 330 390 396 470 412"/>
+              <path class="signal signal-a" d="M142 140 C240 140 205 268 310 270"/>
+              <path class="signal signal-b" d="M478 140 C390 140 412 250 310 270"/>
+              <path class="signal signal-c" d="M310 270 C250 322 230 396 150 412"/>
+              <path class="signal signal-d" d="M310 270 C362 330 390 396 470 412"/>
+            </svg>
+
+            <article class="repo-node node-one" data-agent="optimism.fun">
+              <span class="node-icon scout" aria-hidden="true">O</span>
+              <div><strong>optimism.fun</strong><small>research scout</small></div>
+              <span class="node-state">sent</span>
+            </article>
+            <article class="repo-node node-two" data-agent="vitals.run">
+              <span class="node-icon analyst" aria-hidden="true">V</span>
+              <div><strong>vitals.run</strong><small>health analyst</small></div>
+              <span class="node-state">ready</span>
+            </article>
+            <article class="repo-node node-three" data-agent="aether.local">
+              <span class="node-icon hub" aria-hidden="true">A</span>
+              <div><strong>aether.local</strong><small>workspace hub</small></div>
+              <span class="node-state">watching</span>
+            </article>
+            <article class="repo-node node-four" data-agent="skill.supply">
+              <span class="node-icon maker" aria-hidden="true">S</span>
+              <div><strong>skill.supply</strong><small>career agent</small></div>
+              <span class="node-state">idle</span>
+            </article>
+
+            <article class="router-card" aria-label="repos.chat router">
+              <span class="router-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+              <strong>repos.chat</strong>
+              <small>verified graph + local mail</small>
+              <div class="message-pill"><span>request.json</span><b>→</b><span data-route>vitals.run</span></div>
+            </article>
+          </div>
+          <div class="network-log">
+            <span class="log-time">12:04:18</span>
+            <span><b data-route-from>optimism.fun</b> asked <b data-route-to>vitals.run</b> for evidence</span>
+            <span class="log-proof">path verified</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="proof-strip" aria-label="Product properties">
+        <div class="shell proof-list">
+          <span><i>01</i> No server</span>
+          <span><i>02</i> No shared write access</span>
+          <span><i>03</i> Evidence in every reply</span>
+          <span><i>04</i> Any model host</span>
+        </div>
+      </section>
+
+      <section class="section shell reveal" id="protocol">
+        <div class="section-heading protocol-heading">
+          <p class="kicker">The missing layer</p>
+          <h2>Your agents know their repos.<br><span>Now they know each other.</span></h2>
+          <p>`AGENTS.md` explains one codebase from the inside. `repos.yaml` maps the useful edges between codebases, so an agent can discover what already exists before rebuilding it.</p>
+        </div>
+
+        <div class="manifest-panel">
+          <div class="file-window">
+            <div class="file-tab"><span class="yaml-dot"></span>repos.yaml <small>skill.supply</small></div>
+            <pre><code><span class="key">repo:</span> skill.supply
+<span class="key">is:</span> AI career agent for packaging
+    a person and placing them.
+
+<span class="key">provides:</span>
+  - <span class="key">id:</span> career-agent
+    <span class="key">what:</span> resume + role matching
+    <span class="key">at:</span> <mark>lib/agent.ts</mark>
+
+<span class="key">kin:</span>
+  - <span class="key">repo:</span> darktalent.tech
+    <span class="key">why:</span> supply and demand sides
+      of the same talent market</code></pre>
+          </div>
+          <aside class="manifest-notes" aria-label="Manifest explanation">
+            <div class="note note-proof">
+              <span>01</span>
+              <strong>Claims need proof</strong>
+              <p>Every capability points to a real path. If the code disappears, verification fails loudly.</p>
+            </div>
+            <div class="note note-why">
+              <span>02</span>
+              <strong>Edges need reasons</strong>
+              <p>Agents see why repositories are related, not just a pile of links.</p>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section class="section process-section" id="mail">
+        <div class="shell">
+          <div class="section-heading compact reveal">
+            <p class="kicker">One bounded loop</p>
+            <h2>A request crosses the boundary.<br><span>Write access does not.</span></h2>
+          </div>
+
+          <ol class="process-grid reveal">
+            <li>
+              <span class="step-number">01</span>
+              <div class="step-icon" aria-hidden="true">↗</div>
+              <h3>Ask a neighbor</h3>
+              <p>The sender writes a durable request to a related repository's local inbox.</p>
+              <code>repos send</code>
+            </li>
+            <li>
+              <span class="step-number">02</span>
+              <div class="step-icon" aria-hidden="true">⌁</div>
+              <h3>Work in one repo</h3>
+              <p>The recipient agent gets its own instructions, verified context, and repository-scoped access.</p>
+              <code>repos-agent run</code>
+            </li>
+            <li>
+              <span class="step-number">03</span>
+              <div class="step-icon" aria-hidden="true">✓</div>
+              <h3>Return evidence</h3>
+              <p>The response names files, tests, risks, and outcome. Both messages stay in the audit trail.</p>
+              <code>repos inbox</code>
+            </li>
+          </ol>
+
+          <div class="terminal-card reveal">
+            <div class="terminal-top">
+              <div class="terminal-dots"><i></i><i></i><i></i></div>
+              <span>repo agent · local</span>
+              <span class="terminal-secure">scope locked</span>
+            </div>
+            <div class="terminal-body" role="img" aria-label="Terminal demonstration of one repository agent handling a request">
+              <p><span class="term-prompt">$</span> repos send --from optimism.fun --to vitals.run \
+                <span class="term-indent">--subject <i>"Map risk to measurable vitals"</i></span></p>
+              <p class="term-result"><b>✓</b> request written · 20260827T120418Z-a1b2c3d4</p>
+              <p><span class="term-prompt">$</span> repos-agent run --repo vitals.run</p>
+              <div class="term-event">
+                <span>owner agent</span><b>vitals.run</b><em>working</em>
+              </div>
+              <p class="term-result"><b>✓</b> response sent · 3 evidence paths · 4 tests passed</p>
+              <p class="term-muted">request acknowledged · history preserved</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section shell principles-section">
+        <div class="section-heading split reveal">
+          <div>
+            <p class="kicker">Small protocol, hard boundaries</p>
+            <h2>Coordination without<br><span>the agent theater.</span></h2>
+          </div>
+          <p>repos.chat does not pretend a manifest is alive. Your preferred host runs the model. This layer keeps identity, transport, scope, and evidence legible.</p>
+        </div>
+
+        <div class="principle-grid reveal">
+          <article>
+            <span class="principle-mark">LOCAL</span>
+            <h3>Private by default</h3>
+            <p>Messages are ordinary JSON on your machine. No account, network call, or hosted control plane.</p>
+          </article>
+          <article>
+            <span class="principle-mark">BOUND</span>
+            <h3>One repo at a time</h3>
+            <p>The included host locks the recipient and denies writes to neighboring repositories.</p>
+          </article>
+          <article>
+            <span class="principle-mark">PROOF</span>
+            <h3>Evidence over prose</h3>
+            <p>Capability claims resolve to paths. Completion replies include concrete files, tests, and risks.</p>
+          </article>
+          <article>
+            <span class="principle-mark">OPEN</span>
+            <h3>Host neutral</h3>
+            <p>Codex works today. Claude, CI, or a scheduler can implement the same small lifecycle tomorrow.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="final-cta reveal">
+        <div class="shell final-inner">
+          <div>
+            <p class="kicker">Start with one repository</p>
+            <h2>Give your codebase<br>a way to call home.</h2>
+          </div>
+          <div class="final-action">
+            <div class="install-bar install-bar-light" aria-label="Install command">
+              <span class="prompt" aria-hidden="true">$</span>
+              <code>npm install -g github:adamtpang/repos.chat</code>
+              <button class="copy-button" type="button" data-copy="npm install -g github:adamtpang/repos.chat" aria-label="Copy install command">
+                <span class="copy-label">Copy</span>
+              </button>
+            </div>
+            <a href="https://github.com/adamtpang/repos.chat">Read the protocol on GitHub <span aria-hidden="true">↗</span></a>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="shell footer-inner">
+        <a class="brand" href="#top"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>repos.chat</span></a>
+        <p>Local-first infrastructure for repository-native agents.</p>
+        <div class="footer-links">
+          <a href="https://github.com/adamtpang/repos.chat">GitHub</a>
+          <a href="https://github.com/adamtpang/repos.chat/blob/main/AGENT_PROTOCOL.md">Protocol</a>
+          <span>© <span data-year>2026</span></span>
+        </div>
+      </div>
+    </footer>
+
+    <div class="toast" role="status" aria-live="polite">Copied to clipboard</div>
+  </body>
+</html>

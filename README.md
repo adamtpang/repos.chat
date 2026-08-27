@@ -1,52 +1,111 @@
-# repos.yaml
+# repos.chat
 
-**A manifest for the edges between repositories, with a verifier that stops it from lying.**
+**One AI agent per repository, connected by verified context and durable local mail.**
 
-`AGENTS.md` and `CLAUDE.md` describe the inside of one repo. Nothing describes how repos relate. So an AI coding agent opened in `skill.supply` has no idea that `darktalent.tech` next door already solved half its problem, and rebuilds it.
+[repos.chat](https://repos.chat) gives a fleet of repositories a simple shared language:
 
-`repos.yaml` is one small file per repo declaring what it is, what other repos can borrow from it, and who its kin are.
+1. `repos.yaml` says what each repository is, what it can provide, and why it is related to its neighbors.
+2. The verifier checks that every capability claim points to real code.
+3. A local mailbox lets repository agents request work and return evidence without sharing write access.
+4. A bounded host adapter runs one request inside one recipient repository at a time.
+
+The protocol does not pretend that a file is a running AI agent. Codex, Claude, CI, or another host starts the agent. repos.chat supplies verified context and a provider-neutral transport those hosts can share.
+
+## Install
+
+```sh
+npm install -g github:adamtpang/repos.chat
+```
+
+Requires Node 18 or newer. No account, server, database, or runtime dependency is required.
+
+## Give each repository an identity
+
+Add a `repos.yaml` file to each repository:
 
 ```yaml
 repo: skill.supply
-is: The supply side of talent: an AI career agent that packages a person and places them.
+is: An AI career agent that packages a person and places them.
 url: https://skill.supply
 cluster: talent-stack
 
 provides:
   - id: career-agent
-    what: ikigai read, resume packaging, role matching
+    what: resume packaging and role matching
     at: lib/agent.ts
 
-stack: [next, anthropic, zod]
+stack: [next, typescript]
 
 kin:
   - repo: darktalent.tech
     why: darktalent scores talent from the demand side; skill.supply works the supply side
-
-canon: ECOSYSTEM.md
 ```
 
-## The part that matters: `at:`
+Then verify the workspace:
 
-Every claim points at code. The verifier checks the path exists.
-
-This is not decoration. The first version of this protocol shipped a manifest claiming `pokedex.life` provided "working Stripe checkout." It had a hosted payment link and three unused type fields — no checkout route, no webhook. An agent following that claim would hunt for code that was never written.
-
-**A manifest that sends an agent to nonexistent code is worse than no manifest.** Claims rot silently; `at:` makes them fail loudly.
-
-A claim with no `at:` is reported as *unverifiable*, not as a pass.
-
-## Usage
-
-```
-node repos.mjs verify --root ~/projects   # check every claim against real code
-node repos.mjs sync   --root ~/projects   # detect drift in shared canon files
-node repos.mjs graph  --root ~/projects   # emit the graph as JSON
+```sh
+repos verify --root ~/projects
 ```
 
-No dependencies, no install, no server, no schema registry. One file, Node 18+.
+Every `provides.at` claim must resolve to a real path. Broken claims make verification exit nonzero, so the check works in CI.
 
+## Let repository agents talk
+
+Send a request:
+
+```sh
+repos send --root ~/projects \
+  --from optimism.fun \
+  --to vitals.run \
+  --subject "Check hypertension metrics" \
+  --body "Return the smallest personal vital set supported by the evidence."
 ```
+
+Read a repository's inbox:
+
+```sh
+repos inbox --root ~/projects --repo vitals.run
+repos inbox --root ~/projects --repo vitals.run --json
+```
+
+Emit the complete boot context for one repository agent:
+
+```sh
+repos context --root ~/projects --repo vitals.run
+```
+
+Messages are JSON files under `<root>/.repo-connect/mail/<repo>/`. They stay local unless the operator deliberately adds a remote transport.
+
+## Run one bounded repository agent
+
+The included Codex host adapter locks one repository and one request, gives Codex write access only to the recipient repository, requires structured evidence and test results, sends the result back through the mailbox, and acknowledges the request.
+
+```sh
+node agent-host.mjs run --root ~/projects --repo vitals.run --dry-run
+node agent-host.mjs run --root ~/projects --repo vitals.run
+```
+
+It explicitly forbids external communication, deployment, purchases, commits, pushes, and edits to other repositories. See [AGENT_PROTOCOL.md](AGENT_PROTOCOL.md) for the host lifecycle and safety boundary.
+
+## Commands
+
+```text
+repos verify   confirm manifest claims against real paths
+repos graph    emit repositories and kin edges as JSON
+repos sync     detect drift in shared canon files
+repos send     write a durable request, response, or notice
+repos inbox    read open or acknowledged messages
+repos ack      acknowledge without deleting history
+repos context  assemble one agent's verified boot context
+```
+
+Use `--depth N` when manifests sit more than one directory below the workspace root.
+
+## Why the evidence path matters
+
+A manifest that sends an agent to nonexistent code is worse than no manifest. Capability claims rot silently; `at:` makes them fail loudly.
+
+```text
 ✓ darktalent.tech
 ! optimism.fun
     WARN    kin ness.city: no manifest found in this workspace
@@ -56,48 +115,16 @@ No dependencies, no install, no server, no schema registry. One file, Node 18+.
 10 claims confirmed by a real path, 0 unverifiable, 1 broken, 2 warnings
 ```
 
-`verify` exits non-zero when a claim is broken, so it works in CI.
+## Principles
 
-## `sync` and the drift problem
-
-Teams that share a constitution across repos duplicate it by hand. Identical copies drift the first time one is edited, and nobody notices for months.
-
-Point `canon:` at the shared file and `sync` hashes every copy:
-
-```
-✓ ECOSYSTEM.md  in sync across 3 repos  fa84ddf8
-```
-
-When they diverge it names the newest copy so you know which way to reconcile.
-
-## Designed against the standards that died
-
-| Standard | Why it failed | What this does instead |
-|---|---|---|
-| RDF | Emitting valid RDF needed expertise most authors never acquired | Flat YAML, no validator, writable from memory |
-| Microformats | Welded machine data into human content, so ordinary edits broke it | Manifest is its own file; prose stays in README |
-| Dublin Core | Only paid off once everyone adopted it | Useful at n=1: the first repo to adopt it benefits immediately |
-| Backstage `catalog-info.yaml` | Models real relationships, but needs a portal and a server | A file in a repo, readable by anything |
-| schema.org | **Lived.** Google paid you in rich results | Rides `AGENTS.md`, a habit 60,000+ repos already have |
-| llms.txt | **Living.** One file, obvious name, no tooling | Same shape: one file at root |
-
-The pattern: standards die from ceremony and deferred payoff. So this is fifteen lines, needs nothing installed, and helps the very first repo that adopts it.
-
-## Fields
-
-| Field | Required | Meaning |
-|---|---|---|
-| `repo` | yes | Must match the folder or repo name |
-| `is` | yes | One line. What this is, in a stranger's words |
-| `kin` | yes | Related repos. **Each needs a `why`** — an edge without a reason teaches an agent nothing |
-| `url` | no | Where it runs |
-| `cluster` | no | Free-text grouping |
-| `provides` | no | What others can borrow. Each entry: `id`, `what`, `at` |
-| `stack` | no | Runtime and major dependencies |
-| `canon` | no | Shared constitution file, checked by `sync` |
+- Local first. The graph and mail live beside the repositories.
+- Evidence first. Agents return paths, tests, commits, or sources.
+- Provider neutral. The protocol does not depend on one model host.
+- Repository scoped. A receiver works inside its own codebase.
+- Useful at one. The first manifest already improves agent context.
 
 ## Status
 
-v0, in production across six repositories. Expect the field names to move before v1.
+v0.2 implements manifest verification, canon drift checks, graph export, local mail, machine-readable context, and a bounded Codex host adapter. Continuous scheduling remains deliberately separate.
 
 MIT.

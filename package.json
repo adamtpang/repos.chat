@@ -1,0 +1,40 @@
+{
+  "name": "repos.chat",
+  "version": "0.2.0",
+  "description": "Verified relationships and durable local mail for repository-native AI agents.",
+  "type": "module",
+  "bin": {
+    "repos": "./repos.mjs",
+    "repos-agent": "./agent-host.mjs"
+  },
+  "files": [
+    "repos.mjs",
+    "agent-host.mjs",
+    "AGENT_PROTOCOL.md",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "agent": "node agent-host.mjs run"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/adamtpang/repos.chat.git"
+  },
+  "homepage": "https://repos.chat",
+  "bugs": {
+    "url": "https://github.com/adamtpang/repos.chat/issues"
+  },
+  "keywords": [
+    "ai-agents",
+    "repositories",
+    "multi-agent",
+    "codex",
+    "local-first"
+  ],
+  "author": "Adam Pang",
+  "license": "MIT"
+}

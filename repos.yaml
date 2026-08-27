@@ -1,0 +1,30 @@
+# repos.yaml v0.2 - see repos.chat
+repo: repos.chat
+is: Verified repository relationships and durable local messages for repository-native AI agents.
+url: https://repos.chat
+cluster: agent-infrastructure
+
+provides:
+  - id: manifest-verifier
+    what: verifies that repository capability claims point to real paths
+    at: repos.mjs
+  - id: repository-graph
+    what: resolves repository identities, capabilities, and kin edges as JSON
+    at: repos.mjs
+  - id: agent-mailbox
+    what: sends, reads, and acknowledges durable local messages between repository agents
+    at: repos.mjs
+  - id: agent-protocol
+    what: defines the provider-neutral lifecycle and safety boundary for one AI agent per repository
+    at: AGENT_PROTOCOL.md
+  - id: codex-agent-host
+    what: runs one locked inbox request inside the recipient repository and returns an evidence-bearing response
+    at: agent-host.mjs
+
+stack: [node, vercel]
+
+kin:
+  - repo: Aether
+    why: Aether is the local agent workspace whose repository fleet uses repos.chat to discover capabilities and exchange bounded work.
+
+canon: AGENT_PROTOCOL.md
