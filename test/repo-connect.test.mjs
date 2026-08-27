@@ -21,6 +21,7 @@ function workspace() {
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'repos.yaml'), manifest(repo, kin));
     fs.writeFileSync(path.join(dir, 'proof.txt'), 'verified');
+    fs.writeFileSync(path.join(dir, 'AGENTS.md'), `# ${repo} owner instructions\n`);
   }
   return root;
 }
@@ -35,6 +36,22 @@ test('verifies evidence-backed manifests', () => {
   const root = workspace();
   const output = run(root, 'verify');
   assert.match(output, /2 claims confirmed by a real path, 0 unverifiable, 0 broken/);
+});
+
+test('reports whether a repository has an assigned owner identity', () => {
+  const root = workspace();
+  const result = JSON.parse(run(root, 'status', '--repo', 'beta', '--json'));
+  assert.equal(result.repo, 'beta');
+  assert.equal(result.assigned, true);
+  assert.equal(result.manifest.valid, true);
+  assert.equal(result.instructions.agents, true);
+  assert.equal(result.connections, 1);
+});
+
+test('prints command help without requiring a workspace', () => {
+  const output = execFileSync(process.execPath, [cli, '--help'], { encoding: 'utf8' });
+  assert.match(output, /repos status/);
+  assert.match(output, /Assignment does not mean a model process is always running/);
 });
 
 test('sends, reads, and acknowledges durable messages', () => {

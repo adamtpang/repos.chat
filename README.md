@@ -48,6 +48,15 @@ repos verify --root ~/projects
 
 Every `provides.at` claim must resolve to a real path. Broken claims make verification exit nonzero, so the check works in CI.
 
+Check whether one repository has an assigned owner identity:
+
+```sh
+repos status --root ~/projects --repo metrics-service
+repos status --root ~/projects --repo metrics-service --json
+```
+
+"Assigned" means the repository has a valid `repos.yaml` identity plus at least one local instruction file, `AGENTS.md` or `CLAUDE.md`. It does not claim that a model process is always running. A host starts the owner when work arrives.
+
 ## Let repository agents talk
 
 Send a request:
@@ -90,6 +99,7 @@ It explicitly forbids external communication, deployment, purchases, commits, pu
 
 ```text
 repos verify   confirm manifest claims against real paths
+repos status   show whether one repository has an assigned owner identity
 repos graph    emit repositories and kin edges as JSON
 repos sync     detect drift in shared canon files
 repos send     write a durable request, response, or notice

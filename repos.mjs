@@ -5,6 +5,7 @@
 //   node repos.mjs verify [--root DIR]   check every manifest's claims against real code
 //   node repos.mjs sync   [--root DIR]   detect drift in shared canon files across kin
 //   node repos.mjs graph  [--root DIR]   emit the repo graph as JSON
+//   node repos.mjs status [options]      show whether one repo has an owner identity
 //   node repos.mjs send   [options]      send a durable local message between repos
 //   node repos.mjs inbox  [options]      read one repo's open messages
 //   node repos.mjs ack    [options]      acknowledge a message without deleting it
@@ -383,13 +384,84 @@ function context(repos) {
   return 0;
 }
 
+function status(repos) {
+  const id = option('repo');
+  const current = safeRepoId(id) ? findRepo(repos, id) : null;
+  if (!current) {
+    console.error('status requires --repo matching a manifest');
+    return 1;
+  }
+
+  const manifest = {
+    present: true,
+    identityMatchesFolder: current.m?.repo === current.name,
+    purposeDeclared: typeof current.m?.is === 'string' && current.m.is.length > 0,
+    kinDeclared: Array.isArray(current.m?.kin),
+  };
+  manifest.valid = manifest.identityMatchesFolder && manifest.purposeDeclared && manifest.kinDeclared;
+
+  const instructions = {
+    agents: fs.existsSync(path.join(current.dir, 'AGENTS.md')),
+    claude: fs.existsSync(path.join(current.dir, 'CLAUDE.md')),
+  };
+  const assigned = manifest.valid && (instructions.agents || instructions.claude);
+  const result = {
+    repo: repoId(current),
+    path: current.dir,
+    assigned,
+    manifest,
+    instructions,
+    capabilities: (current.m?.provides || []).length,
+    connections: (current.m?.kin || []).length,
+    openMessages: readInbox(repoId(current)).length,
+    runtime: 'not inspected; a host process starts the agent when work is requested',
+  };
+
+  if (hasFlag('json')) {
+    console.log(JSON.stringify(result, null, 2));
+    return assigned ? 0 : 1;
+  }
+
+  console.log(`${assigned ? `${C.g}✓${C.x}` : `${C.r}✗${C.x}`} ${result.repo}: owner agent ${assigned ? 'assigned' : 'not ready'}`);
+  console.log(`  manifest: ${manifest.valid ? 'valid' : 'incomplete or mismatched'}`);
+  console.log(`  instructions: ${[
+    instructions.agents ? 'AGENTS.md' : null,
+    instructions.claude ? 'CLAUDE.md' : null,
+  ].filter(Boolean).join(', ') || 'none'}`);
+  console.log(`  capabilities: ${result.capabilities}`);
+  console.log(`  connections: ${result.connections}`);
+  console.log(`  open messages: ${result.openMessages}`);
+  console.log(`  runtime: ${result.runtime}`);
+  return assigned ? 0 : 1;
+}
+
+function help() {
+  console.log(`repos.chat commands:
+  repos verify  --root DIR
+  repos status  --root DIR --repo REPO [--json]
+  repos graph   --root DIR [--depth N]
+  repos sync    --root DIR
+  repos send    --root DIR --from REPO --to REPO --subject TEXT --body TEXT
+  repos inbox   --root DIR --repo REPO [--json] [--all]
+  repos ack     --root DIR --repo REPO --id MESSAGE_ID
+  repos context --root DIR --repo REPO
+
+An assigned owner has a valid repos.yaml identity and at least one local
+instruction file. Assignment does not mean a model process is always running.
+Use repos-agent run --root DIR --repo REPO to handle one open request.`);
+  return 0;
+}
+
 /* ---------- run ---------------------------------------------------------- */
+if (cmd === 'help' || cmd === '--help' || hasFlag('help')) {
+  process.exit(help());
+}
 const repos = findManifests(ROOT, DEPTH);
 if (!repos.length) {
   console.log(`no repos.yaml found under ${ROOT}`);
   process.exit(0);
 }
-if (!['send', 'inbox', 'ack', 'context'].includes(cmd)) {
+if (!['send', 'inbox', 'ack', 'context', 'status'].includes(cmd)) {
   console.log(`${C.d}${repos.length} manifests under ${ROOT}${C.x}\n`);
 }
 const code = cmd === 'sync' ? sync(repos)
@@ -398,5 +470,6 @@ const code = cmd === 'sync' ? sync(repos)
   : cmd === 'inbox' ? inbox(repos)
   : cmd === 'ack' ? acknowledge(repos)
   : cmd === 'context' ? context(repos)
+  : cmd === 'status' ? status(repos)
   : verify(repos);
 process.exit(code);
