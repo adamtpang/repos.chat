@@ -24,21 +24,20 @@ Requires Node 18 or newer. No account, server, database, or runtime dependency i
 Add a `repos.yaml` file to each repository:
 
 ```yaml
-repo: skill.supply
-is: An AI career agent that packages a person and places them.
-url: https://skill.supply
-cluster: talent-stack
+repo: product-app
+is: A product agent that plans releases and routes implementation work.
+cluster: product-platform
 
 provides:
-  - id: career-agent
-    what: resume packaging and role matching
-    at: lib/agent.ts
+  - id: release-planner
+    what: release planning and task routing
+    at: src/agent.ts
 
 stack: [next, typescript]
 
 kin:
-  - repo: darktalent.tech
-    why: darktalent scores talent from the demand side; skill.supply works the supply side
+  - repo: metrics-service
+    why: product releases use its verified outcome metrics
 ```
 
 Then verify the workspace:
@@ -55,23 +54,23 @@ Send a request:
 
 ```sh
 repos send --root ~/projects \
-  --from optimism.fun \
-  --to vitals.run \
-  --subject "Check hypertension metrics" \
-  --body "Return the smallest personal vital set supported by the evidence."
+  --from research-agent \
+  --to metrics-service \
+  --subject "Compare release outcome metrics" \
+  --body "Return the smallest metric set supported by the evidence."
 ```
 
 Read a repository's inbox:
 
 ```sh
-repos inbox --root ~/projects --repo vitals.run
-repos inbox --root ~/projects --repo vitals.run --json
+repos inbox --root ~/projects --repo metrics-service
+repos inbox --root ~/projects --repo metrics-service --json
 ```
 
 Emit the complete boot context for one repository agent:
 
 ```sh
-repos context --root ~/projects --repo vitals.run
+repos context --root ~/projects --repo metrics-service
 ```
 
 Messages are JSON files under `<root>/.repo-connect/mail/<repo>/`. They stay local unless the operator deliberately adds a remote transport.
@@ -81,8 +80,8 @@ Messages are JSON files under `<root>/.repo-connect/mail/<repo>/`. They stay loc
 The included Codex host adapter locks one repository and one request, gives Codex write access only to the recipient repository, requires structured evidence and test results, sends the result back through the mailbox, and acknowledges the request.
 
 ```sh
-node agent-host.mjs run --root ~/projects --repo vitals.run --dry-run
-node agent-host.mjs run --root ~/projects --repo vitals.run
+node agent-host.mjs run --root ~/projects --repo metrics-service --dry-run
+node agent-host.mjs run --root ~/projects --repo metrics-service
 ```
 
 It explicitly forbids external communication, deployment, purchases, commits, pushes, and edits to other repositories. See [AGENT_PROTOCOL.md](AGENT_PROTOCOL.md) for the host lifecycle and safety boundary.
@@ -106,11 +105,11 @@ Use `--depth N` when manifests sit more than one directory below the workspace r
 A manifest that sends an agent to nonexistent code is worse than no manifest. Capability claims rot silently; `at:` makes them fail loudly.
 
 ```text
-✓ darktalent.tech
-! optimism.fun
-    WARN    kin ness.city: no manifest found in this workspace
-✗ pokedex.life
-    BROKEN  card-ui: claims components/specimen-card.tsx, which does not exist
+✓ product-app
+! metrics-service
+    WARN    kin data-pipeline: no manifest found in this workspace
+✗ catalog-ui
+    BROKEN  card-ui: claims components/item-card.tsx, which does not exist
 
 10 claims confirmed by a real path, 0 unverifiable, 1 broken, 2 warnings
 ```

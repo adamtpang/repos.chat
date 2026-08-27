@@ -23,8 +23,6 @@ provides:
 
 stack: [node, vercel]
 
-kin:
-  - repo: Aether
-    why: Aether is the local agent workspace whose repository fleet uses repos.chat to discover capabilities and exchange bounded work.
+kin: []
 
 canon: AGENT_PROTOCOL.md

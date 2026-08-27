@@ -24,7 +24,7 @@ const ROOT = rootIdx > -1 ? args[rootIdx + 1] : process.cwd();
 const depthIdx = args.indexOf('--depth');
 // Default 1 matches the tool's original behavior exactly: only immediate
 // subdirectories of --root are scanned. Raise it to see a hub manifest
-// (e.g. Aether/repos.yaml) and nested project manifests in one run.
+// (e.g. workspace-root/repos.yaml) and nested project manifests in one run.
 const DEPTH = depthIdx > -1 ? parseInt(args[depthIdx + 1], 10) : 1;
 const SKIP_DIRS = new Set(['node_modules', '.git', '.next', 'dist', 'build', '.turbo', '.vercel']);
 
@@ -83,7 +83,7 @@ const scalar = v => {
 // Walks `remaining` levels below `dir` looking for repos.yaml in each
 // subdirectory. remaining=1 (the default) is the tool's original behavior:
 // only immediate children of --root. remaining>1 descends further, so a
-// hub-level manifest (Aether/repos.yaml) and nested project manifests can
+// hub-level manifest (workspace-root/repos.yaml) and nested project manifests can
 // be verified together -- previously a documented, unfixed gap.
 function walk(dir, remaining, found) {
   let entries = [];
@@ -102,7 +102,7 @@ function walk(dir, remaining, found) {
 function findManifests(root, depth = 1) {
   const found = [];
   // The root itself can carry a manifest (a hub repos.yaml describing the
-  // workspace, e.g. Aether/repos.yaml) -- previously never checked, only
+  // workspace, e.g. workspace-root/repos.yaml) -- previously never checked, only
   // its subdirectories were.
   const hubPath = path.join(root, 'repos.yaml');
   if (fs.existsSync(hubPath)) {

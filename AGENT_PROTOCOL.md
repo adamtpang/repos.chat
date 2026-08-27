@@ -25,7 +25,7 @@ The verifier rejects capability claims whose evidence paths do not exist.
 An agent host boots an agent with:
 
 ```sh
-repos context --root /path/to/workspace --repo optimism.fun
+repos context --root /path/to/workspace --repo research-agent
 ```
 
 The result contains the repository manifest, resolved kin capabilities, and open inbox. The host then adds the repository's own instructions and code context.
@@ -38,8 +38,8 @@ Agents exchange immutable request bodies through the workspace mailbox:
 
 ```sh
 repos send --root /path/to/workspace \
-  --from optimism.fun \
-  --to vitals.run \
+  --from research-agent \
+  --to metrics-service \
   --kind request \
   --subject "Map population risk to personal metrics" \
   --body-file request.md
@@ -70,8 +70,8 @@ Codex, Claude, a CI job, or a local scheduler can all implement this lifecycle. 
 {
   "version": 1,
   "id": "20260827T120000000Z-a1b2c3d4",
-  "from": "optimism.fun",
-  "to": "vitals.run",
+  "from": "research-agent",
+  "to": "metrics-service",
   "kind": "request",
   "subject": "Map population risk to personal metrics",
   "body": "Return a sourced metric proposal.",
