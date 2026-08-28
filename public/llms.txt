@@ -24,7 +24,10 @@ The skill installer requires Git on `PATH`.
 - `repos verify --root <workspace>` checks every manifest and evidence path.
 - `repos status --root <workspace> --repo <repo>` checks assignment and live presence.
 - `repos graph --root <workspace>` emits the repository graph as JSON.
-- `repos send --root <workspace> --from <repo> --to <repo> --subject <text> --body <text>` writes a durable local message.
+- `repos trigger --root <workspace> --from <repo> --exchange <id> --event <event> --subject <text> --body <text>` creates a reviewable proposal.
+- `repos proposals --root <workspace> --repo <repo>` lists the approval queue.
+- `repos approve --root <workspace> --id <proposal> --approve <proposal>:<digest>` delivers exactly the reviewed request.
+- `repos send --root <workspace> --from <repo> --to <repo> --kind response|notice --subject <text> --body <text>` writes a non-request envelope.
 - `repos inbox --root <workspace> --repo <repo>` reads open messages.
 - `repos context --root <workspace> --repo <repo>` emits verified agent boot context.
 - `repos-agent run --root <workspace> --repo <repo>` runs one bounded request.

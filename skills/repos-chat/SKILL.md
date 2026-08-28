@@ -65,10 +65,10 @@ repos trigger --root <workspace> \
   --body "<scope, constraints, evidence, and definition of done>"
 
 repos proposals --root <workspace> --repo <sender>
-repos approve --root <workspace> --id <proposal-id> --approve <proposal-id>
+repos approve --root <workspace> --id <proposal-id> --approve <proposal-id>:<digest-prefix>
 ```
 
-Do not approve on the user's behalf. The exact repeated ID is the human authorization boundary. Before approval, the recipient inbox must remain unchanged. A trusted human can use the raw transport with `repos send ... --operator` for an intentional one-off request.
+Do not approve on the user's behalf. The exact content-bound confirmation printed by `repos trigger` is the human authorization boundary. Before approval, the recipient inbox must remain unchanged. Raw requests are disabled; `repos send` is limited to responses and non-executable notices.
 
 Preview and run the recipient rep once:
 
@@ -92,7 +92,7 @@ repos status --root <workspace> --repo <recipient> --json
 
 Only call a rep proactive when status shows a fresh watcher lease and live PID. Use `repos-dashboard --root <workspace>` to inspect the local connection map, pixel Repo Pets, proposals, presence, envelopes, recent Git commits, and stored draft PRs. The dashboard is localhost-only.
 
-For a `branch-pr` recipe, use `repos-github plan` only after the recipient has returned test evidence and the proposal is approved. `repos-github open` changes GitHub and requires the human to repeat the exact plan ID. Never run it without that explicit authorization. The GitHub App registration must be limited to selected repositories with Metadata read, Contents write, and Pull requests write; it has no merge command.
+For a `branch-pr` recipe, use `repos-github plan` only after the recipient has returned test evidence and the proposal is approved. `repos-github open` changes GitHub and requires the human to repeat the exact plan ID plus digest prefix printed by the planner. Never run it without that explicit authorization. The GitHub App registration must be limited to selected repositories with Metadata read, Contents write, and Pull requests write; it has no merge command.
 
 If the sender must reason over the result, create a follow-up request back to the sender and run or wake its rep. A response alone is durable evidence, not a command.
 

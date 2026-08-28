@@ -97,22 +97,22 @@ repos trigger --root ~/projects \
   --body "Return the compatible schema and migration notes."
 
 repos proposals --root ~/projects --repo product-app
-repos approve --root ~/projects --id PROPOSAL_ID --approve PROPOSAL_ID
+repos approve --root ~/projects --id PROPOSAL_ID --approve PROPOSAL_ID:DIGEST_PREFIX
 ```
 
-The exact repeated ID is the human authorization boundary. Before approval, nothing reaches the recipient inbox.
+`repos trigger` prints the exact content-bound confirmation. The ID plus digest prefix is the human authorization boundary, so changed proposal bytes require a new review. Before approval, nothing reaches the recipient inbox.
 
-## Use the raw operator transport
+## Send responses and notices
 
-For a one-off request typed directly by a trusted local operator:
+Raw work requests are intentionally disabled; requests must use a declared recipe and the trigger/approve boundary. Reps and local tools can still write non-executable notices and threaded responses:
 
 ```sh
 repos send --root ~/projects \
   --from research-agent \
   --to metrics-service \
-  --subject "Compare release outcome metrics" \
-  --body "Return the smallest metric set supported by the evidence." \
-  --operator
+  --kind notice \
+  --subject "Metric contract changed" \
+  --body "Review the declared refresh-metrics exchange before proposing work."
 ```
 
 Read a repository's inbox:
@@ -159,14 +159,14 @@ Open `http://127.0.0.1:4777`. Every repository has a deterministic original pixe
 
 ## Optional GitHub App contribution
 
-`repos-github` turns an approved `branch-pr` exchange into an app-authored commit and **draft** PR. Planning is local; opening requires the exact plan ID again. The adapter has no merge or deploy command.
+`repos-github` turns an approved `branch-pr` exchange into an app-authored commit and **draft** PR. Planning is local; opening requires the content-bound plan confirmation printed by the planner. The adapter checkpoints branch, commit, and PR stages so a retry resumes instead of duplicating remote work. It has no merge or deploy command.
 
 ```sh
 repos-github status
 repos-github plan --root ~/projects --repo metrics-service \
   --proposal PROPOSAL_ID --files src/schema.ts,test/schema.test.ts \
   --tests "npm test: 18 passed" --title "Refresh metric contract"
-repos-github open --root ~/projects --id PLAN_ID --approve PLAN_ID
+repos-github open --root ~/projects --id PLAN_ID --approve PLAN_ID:DIGEST_PREFIX
 ```
 
 GitHub App registration and credentials remain operator-owned. Use only Metadata read, Contents write, and Pull requests write on selected repositories. See [GITHUB_APP.md](GITHUB_APP.md).
@@ -183,7 +183,7 @@ repos sync     detect drift in shared canon files
 repos trigger  create a reviewable proposal from an allowed signal
 repos proposals list pending or historical proposals
 repos approve  explicitly deliver one proposal as a request
-repos send     write a manual operator request, response, or notice
+repos send     write a response or non-executable notice
 repos inbox    read open or acknowledged messages
 repos ack      acknowledge without deleting history
 repos context  assemble one agent's verified boot context

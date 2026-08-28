@@ -2,7 +2,8 @@
 // Runs or watches one bounded Repo Rep against repos.chat requests.
 // The mailbox is provider-neutral; this first host adapter uses `codex exec`.
 
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -31,6 +32,7 @@ const lockTtlMinutes = Number(option('lock-ttl-minutes') || 120);
 const intervalSeconds = Number(option('interval-seconds') || 2);
 const stateRoot = path.join(root, '.repo-connect');
 const presencePath = repo ? path.join(stateRoot, 'presence', `${repo}.json`) : null;
+const processOwnerToken = crypto.randomUUID();
 
 function fail(message) {
   console.error(message);
@@ -38,9 +40,14 @@ function fail(message) {
 }
 
 function protocolJson(...protocolArgs) {
+  return protocolJsonWithEnv({}, ...protocolArgs);
+}
+
+function protocolJsonWithEnv(extraEnv, ...protocolArgs) {
   const output = execFileSync(process.execPath, [protocol, ...protocolArgs, '--root', root], {
     encoding: 'utf8',
     maxBuffer: 20 * 1024 * 1024,
+    env: { ...process.env, ...extraEnv },
   });
   return JSON.parse(output);
 }
@@ -74,6 +81,7 @@ function writePresence(state, extra = {}) {
     since: existing.state === state ? existing.since || now : now,
     heartbeatAt: now,
     leaseMs: Math.max(15000, intervalSeconds * 4000),
+    leaseId: process.env.REPOS_CHAT_WATCHER_LEASE || extra.leaseId || processOwnerToken,
     lastOutcome: extra.lastOutcome ?? existing.lastOutcome ?? null,
     ...extra,
   });
@@ -85,37 +93,74 @@ function sleep(ms) {
 
 function acquireLock(lockPath, payload, ttlMinutes) {
   fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  const ownerFile = path.join(lockPath, 'owner.json');
   try {
-    const fd = fs.openSync(lockPath, 'wx');
-    fs.writeFileSync(fd, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
-    fs.closeSync(fd);
+    fs.mkdirSync(lockPath);
+    atomicJson(ownerFile, payload);
     return true;
   } catch (err) {
     if (err.code !== 'EEXIST') throw err;
   }
 
   let stale = false;
+  let existing = null;
   try {
-    const existing = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+    existing = JSON.parse(fs.readFileSync(ownerFile, 'utf8'));
     const age = Date.now() - new Date(existing.heartbeatAt || existing.claimedAt).getTime();
     const hasPid = Number.isInteger(existing.pid) && existing.pid > 0;
     let live = false;
     if (hasPid) {
       try { process.kill(existing.pid, 0); live = true; } catch {}
     }
-    stale = hasPid
-      ? !live
-      : Number.isFinite(age) && age > ttlMinutes * 60 * 1000;
+    stale = Number.isFinite(age)
+      && (age > ttlMinutes * 60 * 1000 || (!live && age > 1000));
   } catch {
-    stale = true;
+    try {
+      const age = Date.now() - fs.statSync(lockPath).mtimeMs;
+      stale = age > Math.min(5000, ttlMinutes * 60 * 1000);
+    } catch { stale = false; }
   }
   if (!stale) return false;
 
-  try { fs.unlinkSync(lockPath); } catch { return false; }
+  try {
+    const current = JSON.parse(fs.readFileSync(ownerFile, 'utf8'));
+    if (!existing || current.ownerToken !== existing.ownerToken) return false;
+    fs.rmSync(lockPath, { recursive: true });
+  } catch { return false; }
   return acquireLock(lockPath, payload, ttlMinutes);
 }
 
-function buildPrompt(context, message) {
+function refreshLock(lockPath, payload) {
+  const ownerFile = path.join(lockPath, 'owner.json');
+  let current;
+  try { current = JSON.parse(fs.readFileSync(ownerFile, 'utf8')); } catch { return false; }
+  if (current.ownerToken !== payload.ownerToken) return false;
+  atomicJson(ownerFile, payload);
+  return true;
+}
+
+function releaseLock(lockPath, ownerToken) {
+  const ownerFile = path.join(lockPath, 'owner.json');
+  try {
+    const current = JSON.parse(fs.readFileSync(ownerFile, 'utf8'));
+    if (current.ownerToken !== ownerToken) return false;
+    fs.rmSync(lockPath, { recursive: true });
+    return true;
+  } catch { return false; }
+}
+
+function refreshWatcherLease() {
+  const ownerToken = process.env.REPOS_CHAT_WATCHER_LEASE;
+  if (!ownerToken) return;
+  const lockPath = path.join(stateRoot, 'watchers', `${repo}.json`);
+  const ownerFile = path.join(lockPath, 'owner.json');
+  let owner;
+  try { owner = JSON.parse(fs.readFileSync(ownerFile, 'utf8')); } catch { return; }
+  if (owner.ownerToken !== ownerToken) return;
+  refreshLock(lockPath, { ...owner, heartbeatAt: new Date().toISOString() });
+}
+
+function buildPrompt(context, message, recipe) {
   const kin = context.kin
     .map(item => `${item.repo}: ${item.is || 'manifest unavailable'}`)
     .join('\n');
@@ -142,10 +187,51 @@ Operating boundaries:
 - Complete the bounded request end to end when feasible and run proportionate validation.
 - If the request conflicts with repository instructions or cannot be completed safely, return blocked or declined with the reason.
 - Evidence must name changed file paths, relevant source URLs, or concrete test results.
+- This request is authorized for ${recipe.permission}. ${recipe.permission === 'read-only'
+    ? 'Do not edit repository files.'
+    : 'Local repository edits are allowed, but remote mutations still require the separate guarded GitHub plan flow.'}
 - Your final response must satisfy the supplied JSON schema. Do not wrap it in Markdown.`;
 }
 
-function runCodex(repoPath, prompt, schemaPath, outputPath) {
+function openRequests() {
+  const inbox = path.join(stateRoot, 'mail', repo);
+  const queue = path.join(stateRoot, 'queue', repo);
+  if (!fs.existsSync(queue)) {
+    try { protocolJson('inbox', '--repo', repo, '--json'); } catch { return []; }
+  }
+  let names = [];
+  try { names = fs.readdirSync(queue).filter(name => name.endsWith('.json')).sort(); } catch { return []; }
+  const requests = [];
+  for (const name of names) {
+    try {
+      const message = JSON.parse(fs.readFileSync(path.join(inbox, name), 'utf8'));
+      const expectedName = `${message.id}.json`;
+      if (name === expectedName && safeMessageId(message.id) && message.to === repo
+          && message.protocol === 'repos.chat/1' && message.version === 3
+          && message.kind === 'request' && !message.acknowledgedAt) requests.push(message);
+    } catch {}
+  }
+  return requests.sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+}
+
+function safeMessageId(value) {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]+$/.test(value);
+}
+
+function existingResponse(message) {
+  const id = `${message.id}-response`;
+  const file = path.join(stateRoot, 'mail', message.from, `${id}.json`);
+  try {
+    const response = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return response.id === id && response.protocol === 'repos.chat/1' && response.version === 3
+      && response.kind === 'response' && response.from === message.to && response.to === message.from
+      && response.replyTo === message.id
+      && response.conversationId === (message.conversationId || message.id)
+      ? response : null;
+  } catch { return null; }
+}
+
+async function runCodex(repoPath, prompt, schemaPath, outputPath, permission) {
   let bin = process.env.CODEX_BIN;
   let prefixArgs = [];
   if (!bin && process.platform === 'win32') {
@@ -156,7 +242,7 @@ function runCodex(repoPath, prompt, schemaPath, outputPath) {
       bin = process.execPath;
       prefixArgs = [npmEntry];
     } else {
-      bin = 'codex.cmd';
+      throw new Error('could not locate the Codex JavaScript entry point; set CODEX_BIN to a real executable and CODEX_BIN_ARGS to its JSON argument prefix');
     }
   }
   if (!bin) bin = 'codex';
@@ -167,24 +253,55 @@ function runCodex(repoPath, prompt, schemaPath, outputPath) {
       throw new Error('CODEX_BIN_ARGS must be a JSON array of strings');
     }
   }
+  if (/\.(cmd|bat)$/i.test(bin)) {
+    throw new Error('CODEX_BIN cannot be a .cmd or .bat wrapper; use a real executable with CODEX_BIN_ARGS');
+  }
   const codexArgs = [
     ...prefixArgs,
     'exec',
     '--cd', repoPath,
-    '--sandbox', 'workspace-write',
+    '--sandbox', permission === 'read-only' ? 'read-only' : 'workspace-write',
     '--output-schema', schemaPath,
     '--output-last-message', outputPath,
     '--color', 'never',
   ];
   if (model) codexArgs.push('--model', model);
   codexArgs.push('-');
-  return spawnSync(bin, codexArgs, {
-    cwd: repoPath,
-    input: prompt,
-    encoding: 'utf8',
-    maxBuffer: 50 * 1024 * 1024,
-    timeout: timeoutMinutes * 60 * 1000,
-    shell: process.platform === 'win32' && /\.(cmd|bat)$/i.test(bin),
+  return new Promise(resolve => {
+    const child = spawn(bin, codexArgs, {
+      cwd: repoPath,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+    let stdout = '', stderr = '', settled = false;
+    const maxBuffer = 50 * 1024 * 1024;
+    const finish = value => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => {
+      child.kill();
+      finish({ status: null, error: new Error(`agent host timed out after ${timeoutMinutes} minutes`), stdout, stderr });
+    }, timeoutMinutes * 60 * 1000);
+    child.stdout.on('data', chunk => {
+      stdout += chunk;
+      if (stdout.length > maxBuffer) {
+        child.kill();
+        finish({ status: null, error: new Error('agent host stdout exceeded 50 MB'), stdout, stderr });
+      }
+    });
+    child.stderr.on('data', chunk => {
+      stderr += chunk;
+      if (stderr.length > maxBuffer) {
+        child.kill();
+        finish({ status: null, error: new Error('agent host stderr exceeded 50 MB'), stdout, stderr });
+      }
+    });
+    child.once('error', error => finish({ status: null, error, stdout, stderr }));
+    child.once('close', status => finish({ status, stdout, stderr }));
+    child.stdin.end(prompt);
   });
 }
 
@@ -202,7 +319,11 @@ function sendResponse(message, result) {
   const bodyPath = path.join(tempDir, 'response.json');
   fs.writeFileSync(bodyPath, `${JSON.stringify(result, null, 2)}\n`, 'utf8');
   try {
-    return protocolJson(
+    return protocolJsonWithEnv(
+      {
+        REPOS_CHAT_AGENT_HOST: '1',
+        REPOS_CHAT_INTERNAL_MESSAGE_ID: `${message.id}-response`,
+      },
       'send',
       '--from', message.to,
       '--to', message.from,
@@ -223,6 +344,7 @@ async function watch() {
     repo,
     role: 'repo-rep',
     pid: process.pid,
+    ownerToken: processOwnerToken,
     claimedAt: new Date().toISOString(),
   };
   if (!acquireLock(watcherLock, watcher, lockTtlMinutes)) {
@@ -238,9 +360,7 @@ async function watch() {
 
   try {
     do {
-      const context = protocolJson('context', '--repo', repo);
-      const request = context.inbox.find(message =>
-        message.kind === 'request' && !failedRequests.has(message.id));
+      const request = openRequests().find(message => !failedRequests.has(message.id));
       if (!request) {
         if (lastBlocked) {
           writePresence('blocked', {
@@ -275,7 +395,11 @@ async function watch() {
         const run = spawnSync(process.execPath, childArgs, {
           encoding: 'utf8',
           maxBuffer: 50 * 1024 * 1024,
-          env: { ...process.env, REPOS_CHAT_WATCHER_PID: String(process.pid) },
+          env: {
+            ...process.env,
+            REPOS_CHAT_WATCHER_PID: String(process.pid),
+            REPOS_CHAT_WATCHER_LEASE: processOwnerToken,
+          },
         });
         let outcome = null;
         try { outcome = JSON.parse(run.stdout).result?.outcome || null; } catch {}
@@ -300,12 +424,14 @@ async function watch() {
         }
       }
 
-      atomicJson(watcherLock, { ...watcher, heartbeatAt: new Date().toISOString() });
+      if (!refreshLock(watcherLock, { ...watcher, heartbeatAt: new Date().toISOString() })) {
+        fail(`repository rep watcher lost its lease: ${repo}`);
+      }
       if (hasFlag('once')) break;
       await sleep(intervalSeconds * 1000);
     } while (!stopping);
   } finally {
-    try { fs.unlinkSync(watcherLock); } catch {}
+    releaseLock(watcherLock, processOwnerToken);
     writePresence('offline', {
       proactive: false,
       watcherPid: null,
@@ -331,8 +457,7 @@ if (command === 'watch') {
   process.exit(0);
 }
 
-const context = protocolJson('context', '--repo', repo);
-const requests = context.inbox.filter(message => message.kind === 'request');
+const requests = openRequests();
 const message = requestedId
   ? requests.find(item => item.id === requestedId)
   : requests[0];
@@ -342,7 +467,13 @@ if (!message) {
   process.exit(0);
 }
 
-const prompt = buildPrompt(context, message);
+const context = protocolJson('context', '--repo', repo);
+
+let authorization;
+try { authorization = protocolJson('validate-request', '--repo', repo, '--id', message.id); }
+catch { fail(`request is not authorized by a current approved recipe: ${message.id}`); }
+
+const prompt = buildPrompt(context, message, authorization.recipe);
 if (hasFlag('dry-run')) {
   console.log(JSON.stringify({
     ok: true,
@@ -354,23 +485,75 @@ if (hasFlag('dry-run')) {
   process.exit(0);
 }
 
-const lockPath = path.join(stateRoot, 'locks', `${repo}.json`);
+const lockPath = path.join(stateRoot, 'locks', `${repo}.lock`);
 const claimPath = path.join(stateRoot, 'claims', `${message.id}.json`);
+const claimLockPath = path.join(stateRoot, 'claim-locks', `${message.id}.lock`);
+let previousClaim = null;
+try { previousClaim = JSON.parse(fs.readFileSync(claimPath, 'utf8')); } catch {}
+let recoveredResponse = existingResponse(message);
+const resumableResult = previousClaim?.result;
+const resultDigest = resumableResult
+  ? crypto.createHash('sha256').update(JSON.stringify(resumableResult)).digest('hex')
+  : null;
+const expectedResponseId = `${message.id}-response`;
+const resumableClaim = previousClaim?.expectedResponseId === expectedResponseId
+  && previousClaim?.resultDigest === resultDigest
+  && validResult(resumableResult);
+if (resumableClaim && !recoveredResponse) {
+  recoveredResponse = sendResponse(message, resumableResult).message;
+}
+let recoveredBodyDigest = null;
+try {
+  recoveredBodyDigest = crypto.createHash('sha256')
+    .update(JSON.stringify(JSON.parse(recoveredResponse?.body || ''))).digest('hex');
+} catch {}
+if (resumableClaim && recoveredResponse?.id === expectedResponseId && recoveredBodyDigest === resultDigest) {
+  previousClaim = {
+    repo,
+    messageId: message.id,
+    host,
+    claimedAt: previousClaim?.claimedAt || new Date().toISOString(),
+    ...previousClaim,
+    responseId: recoveredResponse.id,
+    respondedAt: previousClaim?.respondedAt || recoveredResponse.createdAt,
+  };
+  protocolJson('ack', '--repo', repo, '--id', message.id);
+  const completedAt = previousClaim.completedAt || new Date().toISOString();
+  atomicJson(claimPath, { ...previousClaim, completedAt });
+  writePresence(previousClaim.outcome === 'completed' ? 'idle' : 'blocked', {
+    proactive: Boolean(process.env.REPOS_CHAT_WATCHER_PID),
+    watcherPid: Number(process.env.REPOS_CHAT_WATCHER_PID || 0) || null,
+    pid: Number(process.env.REPOS_CHAT_WATCHER_PID || process.pid),
+    lastOutcome: previousClaim.outcome || 'completed',
+  });
+  console.log(JSON.stringify({
+    ok: true,
+    state: 'completed',
+    resumed: true,
+    repo,
+    requestId: message.id,
+    responseId: previousClaim.responseId,
+    result: { outcome: previousClaim.outcome || 'completed' },
+  }, null, 2));
+  process.exit(0);
+}
 const claim = {
   repo,
   messageId: message.id,
   host,
   pid: process.pid,
+  ownerToken: processOwnerToken,
   claimedAt: new Date().toISOString(),
 };
 
 if (!acquireLock(lockPath, claim, lockTtlMinutes)) {
   fail(`repository agent is already running: ${repo}`);
 }
-if (!acquireLock(claimPath, claim, lockTtlMinutes)) {
-  try { fs.unlinkSync(lockPath); } catch {}
+if (!acquireLock(claimLockPath, claim, lockTtlMinutes)) {
+  releaseLock(lockPath, processOwnerToken);
   fail(`message is already claimed: ${message.id}`);
 }
+atomicJson(claimPath, claim);
 
 writePresence('working', {
   proactive: Boolean(process.env.REPOS_CHAT_WATCHER_PID),
@@ -378,6 +561,20 @@ writePresence('working', {
   pid: process.pid,
   messageId: message.id,
 });
+refreshWatcherLease();
+const heartbeat = setInterval(() => {
+  const heartbeatAt = new Date().toISOString();
+  refreshLock(lockPath, { ...claim, heartbeatAt });
+  refreshLock(claimLockPath, { ...claim, heartbeatAt });
+  refreshWatcherLease();
+  writePresence('working', {
+    proactive: Boolean(process.env.REPOS_CHAT_WATCHER_PID),
+    watcherPid: Number(process.env.REPOS_CHAT_WATCHER_PID || 0) || null,
+    pid: process.pid,
+    messageId: message.id,
+  });
+}, Math.max(5000, intervalSeconds * 1000));
+heartbeat.unref();
 
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'repos-chat-agent-'));
 const schemaPath = path.join(tempDir, 'result.schema.json');
@@ -400,7 +597,7 @@ let completed = false;
 let responseSent = false;
 let failure = null;
 try {
-  const run = runCodex(context.repo.path, prompt, schemaPath, outputPath);
+  const run = await runCodex(context.repo.path, prompt, schemaPath, outputPath, authorization.recipe.permission);
   if (run.error) throw new Error(`agent host failed: ${run.error.message}`);
   if (run.status !== 0) {
     const detail = (run.stderr || run.stdout || '').trim();
@@ -413,12 +610,25 @@ try {
   catch (err) { throw new Error(`agent host returned invalid JSON: ${err.message}`); }
   if (!validResult(result)) throw new Error('agent host result does not satisfy the completion contract');
 
+  const expectedResponseId = `${message.id}-response`;
+  const resultDigest = crypto.createHash('sha256').update(JSON.stringify(result)).digest('hex');
+  atomicJson(claimPath, {
+    ...claim,
+    respondingAt: new Date().toISOString(),
+    expectedResponseId,
+    resultDigest,
+    result,
+    outcome: result.outcome,
+  });
   const response = sendResponse(message, result);
   responseSent = true;
   fs.writeFileSync(claimPath, `${JSON.stringify({
     ...claim,
     respondedAt: new Date().toISOString(),
     responseId: response.message.id,
+    expectedResponseId,
+    resultDigest,
+    result,
     outcome: result.outcome,
   }, null, 2)}\n`, 'utf8');
   protocolJson('ack', '--repo', repo, '--id', message.id);
@@ -427,6 +637,9 @@ try {
     ...claim,
     respondedAt: finishedAt,
     responseId: response.message.id,
+    expectedResponseId,
+    resultDigest,
+    result,
     completedAt: finishedAt,
     outcome: result.outcome,
   }, null, 2)}\n`, 'utf8');
@@ -450,8 +663,10 @@ try {
   failure = err;
   console.error(err.message);
 } finally {
+  clearInterval(heartbeat);
   fs.rmSync(tempDir, { recursive: true, force: true });
-  try { fs.unlinkSync(lockPath); } catch {}
+  releaseLock(lockPath, processOwnerToken);
+  releaseLock(claimLockPath, processOwnerToken);
   if (!completed && !responseSent) {
     try { fs.unlinkSync(claimPath); } catch {}
   }

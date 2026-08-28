@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 const args = process.argv.slice(2);
 const command = args[0] || 'status';
@@ -21,6 +22,7 @@ const API = 'https://api.github.com';
 const API_VERSION = '2026-03-10';
 const PLAN_ROOT = path.join(root, '.repo-connect', 'github', 'plans');
 const PR_ROOT = path.join(root, '.repo-connect', 'github', 'pull-requests');
+const protocolCli = path.join(path.dirname(fileURLToPath(import.meta.url)), 'repos.mjs');
 const GIT_BIN = process.env.GIT_BIN || (process.platform === 'win32'
   ? ['C:\\Program Files\\Git\\cmd\\git.exe', 'C:\\Program Files\\Git\\bin\\git.exe'].find(fs.existsSync) || 'git.exe'
   : 'git');
@@ -31,7 +33,8 @@ function fail(message) {
 }
 
 function safeId(value) {
-  return typeof value === 'string' && /^[A-Za-z0-9._-]+$/.test(value);
+  return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value)
+    && value !== '.' && value !== '..';
 }
 
 function atomicJson(dest, value) {
@@ -44,9 +47,19 @@ function atomicJson(dest, value) {
 function repoDir() {
   if (!safeId(repoId)) fail('command requires a safe --repo id');
   const direct = path.join(root, repoId);
-  if (fs.existsSync(path.join(direct, 'repos.yaml'))) return direct;
-  if (repoId === path.basename(root) && fs.existsSync(path.join(root, 'repos.yaml'))) return root;
+  if (fs.existsSync(path.join(direct, 'repos.yaml'))) return containedRepoDir(direct);
+  if (repoId === path.basename(root) && fs.existsSync(path.join(root, 'repos.yaml'))) return containedRepoDir(root);
   fail(`could not find ${repoId}/repos.yaml under the workspace root`);
+}
+
+function containedRepoDir(candidate) {
+  const realRoot = fs.realpathSync(root);
+  const realCandidate = fs.realpathSync(candidate);
+  const inside = path.relative(realRoot, realCandidate);
+  if (inside.startsWith('..') || path.isAbsolute(inside)) {
+    fail('represented repository resolves outside the workspace root');
+  }
+  return realCandidate;
 }
 
 function git(dir, gitArgs) {
@@ -102,7 +115,7 @@ function appJwt() {
   return `${unsigned}.${signature}`;
 }
 
-async function github(pathname, { method = 'GET', token, body } = {}) {
+async function github(pathname, { method = 'GET', token, body, allow404 = false } = {}) {
   const response = await fetch(`${API}${pathname}`, {
     method,
     headers: {
@@ -117,6 +130,7 @@ async function github(pathname, { method = 'GET', token, body } = {}) {
   const text = await response.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = { message: text }; }
+  if (allow404 && response.status === 404) return null;
   if (!response.ok) throw new Error(`GitHub ${method} ${pathname} returned ${response.status}: ${data?.message || 'request failed'}`);
   return data;
 }
@@ -141,10 +155,56 @@ function readProposal(id) {
   catch { fail(`approved proposal not found: ${id}`); }
 }
 
+function validateApprovedProposal(proposal) {
+  let result;
+  try {
+    result = JSON.parse(execFileSync(process.execPath, [
+      protocolCli,
+      'validate-request',
+      '--root', root,
+      '--repo', proposal.to,
+      '--id', proposal.messageId,
+    ], { encoding: 'utf8', windowsHide: true }));
+  } catch (error) {
+    fail(`proposal authorization is not valid: ${String(error.stderr || error.message).trim()}`);
+  }
+  if (result.proposal?.id !== proposal.id || result.recipe?.permission !== 'branch-pr') {
+    fail('proposal authorization does not grant branch-pr permission');
+  }
+  return result;
+}
+
+function planPayload(value) {
+  return {
+    version: value.version,
+    protocol: value.protocol,
+    id: value.id,
+    repo: value.repo,
+    remote: value.remote,
+    proposalId: value.proposalId,
+    proposalDigest: value.proposalDigest,
+    title: value.title,
+    body: value.body,
+    base: value.base,
+    files: value.files,
+    tests: value.tests,
+    createdAt: value.createdAt,
+  };
+}
+
+function planDigest(value) {
+  return crypto.createHash('sha256').update(JSON.stringify(planPayload(value))).digest('hex');
+}
+
+function planConfirmation(value) {
+  return `${value.id}:${value.digest.slice(0, 12)}`;
+}
+
 function normalizeFiles(dir, raw) {
   if (!raw) fail('plan requires a comma-separated --files list');
   const files = [...new Set(raw.split(',').map(value => value.trim()).filter(Boolean))];
   if (!files.length) fail('plan requires at least one file');
+  if (files.length > 50) fail('a guarded plan can contain at most 50 files');
   return files.map(relative => {
     if (path.isAbsolute(relative) || relative.includes('\0')) fail(`unsafe file path: ${relative}`);
     const absolute = path.resolve(dir, relative);
@@ -181,6 +241,7 @@ function plan() {
   if (proposal.state !== 'approved' || !proposal.messageId) fail('proposal must be explicitly approved and delivered first');
   if (proposal.to !== repoId) fail(`proposal is addressed to ${proposal.to}, not ${repoId}`);
   if (proposal.recipe?.permission !== 'branch-pr') fail('exchange permission must be branch-pr');
+  validateApprovedProposal(proposal);
   const files = normalizeFiles(dir, option('files'));
   const title = option('title') || proposal.subject;
   const tests = option('tests');
@@ -196,6 +257,7 @@ function plan() {
     repo: repoId,
     remote,
     proposalId,
+    proposalDigest: proposal.payloadDigest,
     title,
     body: option('body') || `${proposal.body}\n\n## Repo Rep evidence\n\n- Proposal: ${proposalId}\n- Exchange: ${proposal.exchange}\n- Tests: ${tests}\n- Human approval: ${proposal.approvedAt}`,
     base: option('base') || 'main',
@@ -203,8 +265,14 @@ function plan() {
     tests,
     createdAt: now,
   };
+  result.digest = planDigest(result);
   atomicJson(path.join(PLAN_ROOT, `${id}.json`), result);
-  console.log(JSON.stringify({ ok: true, externalChange: false, plan: result, next: `repos-github open --root <workspace> --id ${id} --approve ${id}` }, null, 2));
+  console.log(JSON.stringify({
+    ok: true,
+    externalChange: false,
+    plan: result,
+    next: `repos-github open --root <workspace> --id ${id} --approve ${planConfirmation(result)}`,
+  }, null, 2));
 }
 
 function readPlan(id) {
@@ -236,41 +304,150 @@ function additionsFor(planValue, dir) {
   return { additions, deletions };
 }
 
+function persistPlan(value) {
+  atomicJson(path.join(PLAN_ROOT, `${value.id}.json`), value);
+}
+
+function pullRecord(planValue, branch, commit, pull) {
+  return {
+    number: pull.number,
+    title: pull.title,
+    url: pull.html_url,
+    state: pull.state,
+    draft: pull.draft,
+    branch,
+    commit,
+    proposalId: planValue.proposalId,
+    openedAt: pull.created_at || new Date().toISOString(),
+  };
+}
+
+function finishPlan(planValue, record) {
+  const prFile = path.join(PR_ROOT, `${planValue.repo}.json`);
+  let existing = { repo: planValue.repo, pullRequests: [] };
+  try { existing = JSON.parse(fs.readFileSync(prFile, 'utf8')); } catch {}
+  existing.pullRequests = [record, ...(existing.pullRequests || []).filter(item => item.number !== record.number)];
+  atomicJson(prFile, existing);
+  planValue.state = 'opened';
+  planValue.openedAt = record.openedAt;
+  planValue.pullRequest = record;
+  persistPlan(planValue);
+  return record;
+}
+
+async function verifyRemoteCommit(planValue, branch, sha, token, owner, repository) {
+  const commit = await github(`/repos/${owner}/${repository}/commits/${encodeURIComponent(sha)}`, { token });
+  if (commit.parents?.length !== 1 || commit.parents[0].sha !== planValue.mutation.baseSha) {
+    fail('remote branch commit is not based on the reviewed base revision');
+  }
+  const expectedPaths = [...planValue.files.map(file => file.path)].sort();
+  const changedPaths = [...(commit.files || []).map(file => file.filename)].sort();
+  if (JSON.stringify(expectedPaths) !== JSON.stringify(changedPaths)) {
+    fail('remote branch commit changed files outside the reviewed plan');
+  }
+  for (const file of planValue.files) {
+    const encodedPath = file.path.split('/').map(encodeURIComponent).join('/');
+    const remote = await github(
+      `/repos/${owner}/${repository}/contents/${encodedPath}?ref=${encodeURIComponent(branch)}`,
+      { token, allow404: true },
+    );
+    if (file.operation === 'delete') {
+      if (remote) fail(`planned deletion is still present on the remote branch: ${file.path}`);
+      continue;
+    }
+    if (!remote || Array.isArray(remote) || remote.type !== 'file' || typeof remote.content !== 'string') {
+      fail(`could not verify planned remote file: ${file.path}`);
+    }
+    const content = Buffer.from(remote.content.replace(/\s/g, ''), 'base64');
+    const actual = crypto.createHash('sha256').update(content).digest('hex');
+    if (actual !== file.sha256) fail(`remote file does not match the reviewed hash: ${file.path}`);
+  }
+  return { oid: sha, url: commit.html_url || null, verified: true };
+}
+
 async function open() {
   const id = option('id');
-  if (option('approve') !== id) fail('open requires an exact --approve PLAN_ID confirmation');
-  if (!configured()) fail('GitHub App credentials are not configured; no external change was made');
   const planValue = readPlan(id);
-  if (planValue.state !== 'planned') fail(`plan is already ${planValue.state}`);
+  if (planValue.digest !== planDigest(planValue)) fail('plan changed after review; create a new plan');
+  if (option('approve') !== planConfirmation(planValue)) {
+    fail(`open requires the exact content-bound confirmation: --approve ${planConfirmation(planValue)}`);
+  }
+  if (!configured()) fail('GitHub App credentials are not configured; no external change was made');
+  if (!['planned', 'opening'].includes(planValue.state)) fail(`plan is already ${planValue.state}`);
   if (repoId && repoId !== planValue.repo) fail(`plan belongs to ${planValue.repo}`);
   const effectiveRepo = planValue.repo;
   const direct = path.join(root, effectiveRepo);
-  const dir = fs.existsSync(path.join(direct, 'repos.yaml')) ? direct : root;
+  const dir = containedRepoDir(fs.existsSync(path.join(direct, 'repos.yaml')) ? direct : root);
+  const approved = readProposal(planValue.proposalId);
+  if (approved.payloadDigest !== planValue.proposalDigest) fail('approved proposal changed after GitHub planning');
+  validateApprovedProposal(approved);
   const currentRemote = remoteFor(dir);
   if (currentRemote.owner !== planValue.remote.owner || currentRemote.repo !== planValue.remote.repo) fail('origin changed after planning');
   const fileChanges = additionsFor(planValue, dir);
   const token = await installationToken();
   const owner = encodeURIComponent(planValue.remote.owner);
   const repository = encodeURIComponent(planValue.remote.repo);
-  const baseRef = await github(`/repos/${owner}/${repository}/git/ref/heads/${encodeURIComponent(planValue.base)}`, { token });
   const branch = `repos-chat/${effectiveRepo}/${planValue.proposalId.slice(-12)}`.replace(/[^A-Za-z0-9._/-]/g, '-');
-  await github(`/repos/${owner}/${repository}/git/refs`, {
-    method: 'POST', token, body: { ref: `refs/heads/${branch}`, sha: baseRef.object.sha },
-  });
-  const mutation = `mutation CreateRepoRepCommit($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid url } } }`;
-  const commitResult = await github('/graphql', {
-    method: 'POST', token, body: {
-      query: mutation,
-      variables: { input: {
-        branch: { repositoryNameWithOwner: `${planValue.remote.owner}/${planValue.remote.repo}`, branchName: branch },
-        message: { headline: planValue.title, body: `Repo-Rep-Proposal: ${planValue.proposalId}` },
-        fileChanges,
-        expectedHeadOid: baseRef.object.sha,
-      } },
-    },
-  });
-  if (commitResult.errors?.length) throw new Error(commitResult.errors.map(error => error.message).join('; '));
-  const pull = await github(`/repos/${owner}/${repository}/pulls`, {
+  planValue.state = 'opening';
+  planValue.mutation = { ...(planValue.mutation || {}), branch, startedAt: planValue.mutation?.startedAt || new Date().toISOString() };
+  persistPlan(planValue);
+
+  const pullQuery = `/repos/${owner}/${repository}/pulls?state=open&head=${encodeURIComponent(`${planValue.remote.owner}:${branch}`)}`;
+  let branchRef = await github(
+    `/repos/${owner}/${repository}/git/ref/heads/${encodeURIComponent(branch)}`,
+    { token, allow404: true },
+  );
+  const baseRef = await github(`/repos/${owner}/${repository}/git/ref/heads/${encodeURIComponent(planValue.base)}`, { token });
+  if (planValue.mutation.baseSha && planValue.mutation.baseSha !== baseRef.object.sha) {
+    fail('planned base branch moved during the resumable GitHub operation');
+  }
+  planValue.mutation.baseSha = baseRef.object.sha;
+  persistPlan(planValue);
+  if (!branchRef) {
+    await github(`/repos/${owner}/${repository}/git/refs`, {
+      method: 'POST', token, body: { ref: `refs/heads/${branch}`, sha: planValue.mutation.baseSha },
+    });
+    planValue.mutation.branchCreatedAt = new Date().toISOString();
+    persistPlan(planValue);
+    branchRef = { object: { sha: planValue.mutation.baseSha } };
+  }
+
+  let commit = null;
+  if (!commit && branchRef.object.sha !== planValue.mutation.baseSha) {
+    commit = await verifyRemoteCommit(planValue, branch, branchRef.object.sha, token, owner, repository);
+    planValue.mutation.commit = commit;
+    persistPlan(planValue);
+  }
+  if (!commit) {
+    const mutation = `mutation CreateRepoRepCommit($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid url } } }`;
+    const commitResult = await github('/graphql', {
+      method: 'POST', token, body: {
+        query: mutation,
+        variables: { input: {
+          branch: { repositoryNameWithOwner: `${planValue.remote.owner}/${planValue.remote.repo}`, branchName: branch },
+          message: { headline: planValue.title, body: `Repo-Rep-Proposal: ${planValue.proposalId}` },
+          fileChanges,
+          expectedHeadOid: planValue.mutation.baseSha,
+        } },
+      },
+    });
+    if (commitResult.errors?.length) throw new Error(commitResult.errors.map(error => error.message).join('; '));
+    commit = commitResult.data.createCommitOnBranch.commit;
+    commit = await verifyRemoteCommit(planValue, branch, commit.oid, token, owner, repository);
+    planValue.mutation.commit = commit;
+    planValue.mutation.committedAt = new Date().toISOString();
+    persistPlan(planValue);
+  }
+
+  const existingPulls = await github(pullQuery, { token });
+  if (existingPulls?.[0]) {
+    const existing = existingPulls[0];
+    if (existing.title !== planValue.title || existing.body !== planValue.body
+        || existing.base?.ref !== planValue.base || existing.head?.ref !== branch) {
+      fail('existing pull request does not match the reviewed plan');
+    }
+  }
+  const pull = existingPulls?.[0] || await github(`/repos/${owner}/${repository}/pulls`, {
     method: 'POST', token, body: {
       title: planValue.title,
       body: planValue.body,
@@ -280,26 +457,7 @@ async function open() {
       maintainer_can_modify: true,
     },
   });
-  const record = {
-    number: pull.number,
-    title: pull.title,
-    url: pull.html_url,
-    state: pull.state,
-    draft: pull.draft,
-    branch,
-    commit: commitResult.data.createCommitOnBranch.commit,
-    proposalId: planValue.proposalId,
-    openedAt: new Date().toISOString(),
-  };
-  const prFile = path.join(PR_ROOT, `${effectiveRepo}.json`);
-  let existing = { repo: effectiveRepo, pullRequests: [] };
-  try { existing = JSON.parse(fs.readFileSync(prFile, 'utf8')); } catch {}
-  existing.pullRequests = [record, ...(existing.pullRequests || []).filter(item => item.number !== record.number)];
-  atomicJson(prFile, existing);
-  planValue.state = 'opened';
-  planValue.openedAt = record.openedAt;
-  planValue.pullRequest = record;
-  atomicJson(path.join(PLAN_ROOT, `${id}.json`), planValue);
+  const record = finishPlan(planValue, pullRecord(planValue, branch, commit, pull));
   console.log(JSON.stringify({ ok: true, externalChange: true, pullRequest: record }, null, 2));
 }
 

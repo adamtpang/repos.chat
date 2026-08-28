@@ -142,8 +142,9 @@ function verify(repos) {
       const id = typeof p === 'object' ? (p.id || Object.keys(p)[0]) : String(p).split(':')[0];
       const at = typeof p === 'object' ? p.at : null;
       if (!at) { notes.push(`${id}: no evidence path (add "at:")`); unverified++; continue; }
-      if (fs.existsSync(path.join(r.dir, at))) { confirmed++; }
-      else { problems.push(`${id}: claims ${at}, which does not exist`); broken++; }
+      const evidence = containedEvidence(r.dir, at);
+      if (evidence.ok) { confirmed++; }
+      else { problems.push(`${id}: claims ${at}, which ${evidence.error}`); broken++; }
     }
 
     const seenKin = new Set();
@@ -186,8 +187,11 @@ function verify(repos) {
       if (exchange.approval && exchange.approval !== 'human-required') {
         problems.push(`exchange ${label}: approval must be human-required`); broken++;
       }
-      if (exchange.at && !fs.existsSync(path.join(r.dir, exchange.at))) {
-        problems.push(`exchange ${label}: evidence ${exchange.at} does not exist`); broken++;
+      if (exchange.at) {
+        const evidence = containedEvidence(r.dir, exchange.at);
+        if (!evidence.ok) {
+          problems.push(`exchange ${label}: evidence ${exchange.at} ${evidence.error}`); broken++;
+        }
       }
     }
 
@@ -241,6 +245,12 @@ function sync(repos) {
 /* ---------- graph -------------------------------------------------------- */
 function graph(repos) {
   const gitRepos = new Set(String(option('git-repos') || '').split(',').filter(Boolean));
+  const pendingByRepo = new Map();
+  for (const proposal of readProposals()) {
+    if (proposal.state !== 'proposed') continue;
+    pendingByRepo.set(proposal.from, (pendingByRepo.get(proposal.from) || 0) + 1);
+    if (proposal.to !== proposal.from) pendingByRepo.set(proposal.to, (pendingByRepo.get(proposal.to) || 0) + 1);
+  }
   const nodes = repos.map(r => {
     const id = repoId(r);
     const includeGit = hasFlag('git') && (!gitRepos.size || gitRepos.has(id));
@@ -255,7 +265,7 @@ function graph(repos) {
       provides: (r.m?.provides || []).map(p => typeof p === 'object' ? (p.id || Object.keys(p)[0]) : String(p).split(':')[0]),
       assigned: manifestValid && instructions,
       openMessages: readInbox(id).length,
-      pendingProposals: readProposals(id).filter(proposal => proposal.state === 'proposed').length,
+      pendingProposals: pendingByRepo.get(id) || 0,
       presence: readPresence(id),
       git: includeGit ? gitSummary(r.dir) : null,
       pullRequests: readPullRequests(id),
@@ -286,8 +296,10 @@ function graph(repos) {
 // workspace root so Codex, Claude, CI, or another host can all consume the same
 // durable inbox without a server or provider-specific API.
 const MAIL_ROOT = path.join(ROOT, '.repo-connect', 'mail');
+const QUEUE_ROOT = path.join(ROOT, '.repo-connect', 'queue');
 const PRESENCE_ROOT = path.join(ROOT, '.repo-connect', 'presence');
 const PROPOSAL_ROOT = path.join(ROOT, '.repo-connect', 'proposals');
+const APPROVAL_ROOT = path.join(ROOT, '.repo-connect', 'approvals');
 const GITHUB_ROOT = path.join(ROOT, '.repo-connect', 'github');
 const MESSAGE_KINDS = new Set(['request', 'response', 'notice']);
 const TRIGGERS = new Set(['manual', 'webhook', 'ci', 'contract-drift']);
@@ -302,7 +314,7 @@ function findRepo(repos, id) {
 }
 
 function safeRepoId(id) {
-  return typeof id === 'string' && /^[A-Za-z0-9._-]+$/.test(id);
+  return typeof id === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id) && id !== '.' && id !== '..';
 }
 
 function safeMessageId(id) {
@@ -328,14 +340,95 @@ function writeJsonAtomic(dest, value) {
   fs.renameSync(temp, dest);
 }
 
+function containedEvidence(repoDir, claimedPath) {
+  if (typeof claimedPath !== 'string' || !claimedPath || path.isAbsolute(claimedPath) || claimedPath.includes('\0')) {
+    return { ok: false, error: 'must be a relative regular-file path' };
+  }
+  const absolute = path.resolve(repoDir, claimedPath);
+  const lexical = path.relative(repoDir, absolute);
+  if (!lexical || lexical.startsWith('..') || path.isAbsolute(lexical)) {
+    return { ok: false, error: 'escapes the represented repository' };
+  }
+  try {
+    const realRoot = fs.realpathSync(repoDir);
+    const realTarget = fs.realpathSync(absolute);
+    const inside = path.relative(realRoot, realTarget);
+    if (!inside || inside.startsWith('..') || path.isAbsolute(inside)) {
+      return { ok: false, error: 'resolves outside the represented repository' };
+    }
+    if (!fs.statSync(realTarget).isFile()) return { ok: false, error: 'is not a regular file' };
+    return { ok: true, path: realTarget };
+  } catch {
+    return { ok: false, error: 'does not exist' };
+  }
+}
+
+function recipeSnapshot(exchange) {
+  return {
+    with: exchange.with,
+    trigger: exchange.trigger,
+    asks: exchange.asks,
+    returns: exchange.returns,
+    permission: exchange.permission,
+    approval: exchange.approval,
+    evidence: exchange.at,
+  };
+}
+
+function recipeDigest(recipe) {
+  return crypto.createHash('sha256').update(JSON.stringify(recipe)).digest('hex');
+}
+
+function validateExchange(repos, source, exchange) {
+  if (!exchange || typeof exchange !== 'object') return 'exchange is not a recipe';
+  for (const field of ['id', 'with', 'trigger', 'asks', 'returns', 'permission', 'approval', 'at']) {
+    if (!exchange[field]) return `exchange is missing ${field}`;
+  }
+  if (!safeExchangeId(exchange.id)) return 'exchange id contains unsupported characters';
+  if (!findRepo(repos, exchange.with)) return `exchange target is not available in this workspace: ${exchange.with}`;
+  if (!TRIGGERS.has(exchange.trigger)) return `unsupported trigger: ${exchange.trigger}`;
+  if (!PERMISSIONS.has(exchange.permission)) return `unsupported permission: ${exchange.permission}`;
+  if (exchange.approval !== 'human-required') return 'exchange approval must be human-required';
+  const evidence = containedEvidence(source.dir, exchange.at);
+  if (!evidence.ok) return `exchange evidence ${exchange.at} ${evidence.error}`;
+  return null;
+}
+
 function messagePath(to, id) {
   return path.join(MAIL_ROOT, to, `${id}.json`);
+}
+
+function queuePath(to, id) {
+  return path.join(QUEUE_ROOT, to, `${id}.json`);
+}
+
+function ensureQueue(repo) {
+  const queueDir = path.join(QUEUE_ROOT, repo);
+  if (fs.existsSync(queueDir)) return queueDir;
+  fs.mkdirSync(queueDir, { recursive: true });
+  const mailDir = path.join(MAIL_ROOT, repo);
+  let names = [];
+  try { names = fs.readdirSync(mailDir).filter(name => name.endsWith('.json')); } catch { return queueDir; }
+  for (const name of names) {
+    try {
+      const message = JSON.parse(fs.readFileSync(path.join(mailDir, name), 'utf8'));
+      if (MESSAGE_KINDS.has(message.kind) && !message.acknowledgedAt && safeMessageId(message.id)
+          && name === `${message.id}.json` && message.to === repo) {
+        writeJsonAtomic(queuePath(repo, message.id), { id: message.id, to: repo });
+      }
+    } catch {}
+  }
+  return queueDir;
 }
 
 function readInbox(repo, includeAcknowledged = false) {
   const dir = path.join(MAIL_ROOT, repo);
   let names = [];
-  try { names = fs.readdirSync(dir).filter(name => name.endsWith('.json')); } catch { return []; }
+  try {
+    names = includeAcknowledged
+      ? fs.readdirSync(dir).filter(name => name.endsWith('.json'))
+      : fs.readdirSync(ensureQueue(repo)).filter(name => name.endsWith('.json'));
+  } catch { return []; }
   const messages = [];
   for (const name of names) {
     try {
@@ -361,6 +454,58 @@ function findMessageById(id) {
 
 function proposalPath(id) {
   return path.join(PROPOSAL_ROOT, `${id}.json`);
+}
+
+function approvalPath(id) {
+  return path.join(APPROVAL_ROOT, `${id}.json`);
+}
+
+function proposalPayload(proposal) {
+  return {
+    version: proposal.version,
+    protocol: proposal.protocol,
+    id: proposal.id,
+    from: proposal.from,
+    to: proposal.to,
+    exchange: proposal.exchange,
+    event: proposal.event,
+    subject: proposal.subject,
+    body: proposal.body,
+    recipe: proposal.recipe,
+    recipeDigest: proposal.recipeDigest,
+    createdAt: proposal.createdAt,
+  };
+}
+
+function proposalDigest(proposal) {
+  return crypto.createHash('sha256').update(JSON.stringify(proposalPayload(proposal))).digest('hex');
+}
+
+function approvalToken(proposal) {
+  return `${proposal.id}:${proposal.payloadDigest.slice(0, 12)}`;
+}
+
+function readApproval(id) {
+  try { return JSON.parse(fs.readFileSync(approvalPath(id), 'utf8')); } catch { return null; }
+}
+
+function writeApprovalExclusive(record) {
+  const dest = approvalPath(record.proposalId);
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  try {
+    const fd = fs.openSync(dest, 'wx');
+    fs.writeFileSync(fd, `${JSON.stringify(record, null, 2)}\n`, 'utf8');
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    return { ok: true, record };
+  } catch (error) {
+    if (error.code !== 'EEXIST') return { ok: false, error: error.message };
+    const existing = readApproval(record.proposalId);
+    if (!existing || existing.payloadDigest !== record.payloadDigest || existing.confirmation !== record.confirmation) {
+      return { ok: false, error: 'an incompatible approval record already exists' };
+    }
+    return { ok: true, record: existing, reused: true };
+  }
 }
 
 function readProposals(repo = null) {
@@ -434,7 +579,12 @@ function trigger(repos) {
     console.error(`exchange not found: ${from}/${exchangeId}`);
     return 1;
   }
-  const { exchange } = resolved;
+  const { source, exchange } = resolved;
+  const exchangeProblem = validateExchange(repos, source, exchange);
+  if (exchangeProblem) {
+    console.error(`exchange ${exchangeId} is not executable: ${exchangeProblem}`);
+    return 1;
+  }
   if (exchange.trigger !== event) {
     console.error(`exchange ${exchangeId} accepts ${exchange.trigger}, not ${event}`);
     return 1;
@@ -469,17 +619,18 @@ function trigger(repos) {
     event,
     subject,
     body,
-    recipe: {
-      asks: exchange.asks,
-      returns: exchange.returns,
-      permission: exchange.permission,
-      approval: exchange.approval,
-      evidence: exchange.at,
-    },
+    recipe: recipeSnapshot(exchange),
+    recipeDigest: recipeDigest(recipeSnapshot(exchange)),
     createdAt,
   };
+  proposal.payloadDigest = proposalDigest(proposal);
   writeJsonAtomic(proposalPath(id), proposal);
-  console.log(JSON.stringify({ ok: true, delivered: false, proposal, next: `repos approve --id ${id} --approve ${id}` }, null, 2));
+  console.log(JSON.stringify({
+    ok: true,
+    delivered: false,
+    proposal,
+    next: `repos approve --id ${id} --approve ${approvalToken(proposal)}`,
+  }, null, 2));
   return 0;
 }
 
@@ -508,14 +659,24 @@ function listProposals(repos) {
 function approve(repos) {
   const id = option('id');
   const confirmation = option('approve');
-  if (!safeProposalId(id) || confirmation !== id) {
-    console.error('approve requires --id ID and an exact --approve ID confirmation');
+  if (!safeProposalId(id)) {
+    console.error('approve requires a safe --id');
     return 1;
   }
   let proposal;
   try { proposal = JSON.parse(fs.readFileSync(proposalPath(id), 'utf8')); }
   catch { console.error(`proposal not found: ${id}`); return 1; }
-  if (proposal.state !== 'proposed') {
+  if (proposal.id !== id || proposal.protocol !== 'repos.chat/proposal/1' || proposal.version !== 1
+      || proposal.payloadDigest !== proposalDigest(proposal)) {
+    console.error(`proposal ${id} failed its immutable payload check`);
+    return 1;
+  }
+  const expectedConfirmation = approvalToken(proposal);
+  if (confirmation !== expectedConfirmation) {
+    console.error(`approve requires the exact content-bound confirmation: --approve ${expectedConfirmation}`);
+    return 1;
+  }
+  if (!['proposed', 'approved'].includes(proposal.state)) {
     console.error(`proposal ${id} is already ${proposal.state}`);
     return 1;
   }
@@ -524,20 +685,50 @@ function approve(repos) {
     console.error(`proposal ${id} no longer matches a declared exchange`);
     return 1;
   }
+  const exchangeProblem = validateExchange(repos, resolved.source, resolved.exchange);
+  if (exchangeProblem) {
+    console.error(`proposal ${id} is no longer authorized: ${exchangeProblem}`);
+    return 1;
+  }
+  const currentRecipe = recipeSnapshot(resolved.exchange);
+  if (recipeDigest(currentRecipe) !== proposal.recipeDigest
+      || JSON.stringify(currentRecipe) !== JSON.stringify(proposal.recipe)) {
+    console.error(`proposal ${id} is stale because its exchange recipe changed; trigger a new proposal`);
+    return 1;
+  }
+  const approval = writeApprovalExclusive({
+    protocol: 'repos.chat/approval/1',
+    proposalId: id,
+    payloadDigest: proposal.payloadDigest,
+    confirmation: expectedConfirmation,
+    approvedBy: 'local-operator',
+    approvedAt: new Date().toISOString(),
+  });
+  if (!approval.ok) {
+    console.error(`could not persist approval: ${approval.error}`);
+    return 1;
+  }
   const delivered = deliverMessage(repos, {
+    id: `${id}-request`,
     from: proposal.from,
     to: proposal.to,
     kind: 'request',
     subject: proposal.subject,
     body: proposal.body,
-    metadata: { proposalId: id, exchange: proposal.exchange, permission: proposal.recipe.permission },
+    metadata: {
+      proposalId: id,
+      exchange: proposal.exchange,
+      permission: currentRecipe.permission,
+      recipeDigest: proposal.recipeDigest,
+      approvedBy: 'local-operator',
+    },
   });
   if (!delivered.ok) {
     console.error(delivered.error);
     return 1;
   }
   proposal.state = 'approved';
-  proposal.approvedAt = new Date().toISOString();
+  proposal.approvedAt = approval.record.approvedAt;
   proposal.approvedBy = 'local-operator';
   proposal.messageId = delivered.message.id;
   writeJsonAtomic(proposalPath(id), proposal);
@@ -559,9 +750,11 @@ function deliverMessage(repos, input) {
   if (requestedConversationId && !safeConversationId(requestedConversationId)) return { ok: false, error: 'conversationId contains unsupported characters' };
   if (!body) return { ok: false, error: 'message requires a body' };
 
+  const requestedId = input.id || null;
+  if (requestedId && !safeMessageId(requestedId)) return { ok: false, error: 'message id contains unsupported characters' };
   const createdAt = new Date().toISOString();
   const stamp = createdAt.replace(/[-:.]/g, '');
-  const id = `${stamp}-${crypto.randomBytes(4).toString('hex')}`;
+  const id = requestedId || `${stamp}-${crypto.randomBytes(4).toString('hex')}`;
   const parent = replyTo ? findMessageById(replyTo) : null;
   const conversationId = requestedConversationId || parent?.conversationId || id;
   const message = {
@@ -578,7 +771,28 @@ function deliverMessage(repos, input) {
     ...(replyTo ? { replyTo } : {}),
     ...(input.metadata ? { authorization: input.metadata } : {}),
   };
-  writeJsonAtomic(messagePath(to, id), message);
+  const dest = messagePath(to, id);
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  try {
+    const fd = fs.openSync(dest, 'wx');
+    fs.writeFileSync(fd, `${JSON.stringify(message, null, 2)}\n`, 'utf8');
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+  } catch (error) {
+    if (error.code !== 'EEXIST') return { ok: false, error: `could not deliver message: ${error.message}` };
+    let existing;
+    try { existing = JSON.parse(fs.readFileSync(dest, 'utf8')); }
+    catch { return { ok: false, error: `message id already exists but is unreadable: ${id}` }; }
+    const same = ['id', 'from', 'to', 'kind', 'subject', 'body', 'replyTo', 'conversationId']
+      .every(key => (existing[key] ?? null) === (message[key] ?? null))
+      && JSON.stringify(existing.authorization || null) === JSON.stringify(message.authorization || null);
+    if (!same) return { ok: false, error: `message id already exists with different content: ${id}` };
+    if (!existing.acknowledgedAt) {
+      writeJsonAtomic(queuePath(existing.to, existing.id), { id: existing.id, to: existing.to });
+    }
+    return { ok: true, message: existing, reused: true };
+  }
+  writeJsonAtomic(queuePath(to, id), { id, to });
   return { ok: true, message };
 }
 
@@ -588,7 +802,7 @@ function send(repos) {
   const subject = option('subject');
   const bodyFile = option('body-file');
   let body = option('body');
-  const kind = option('kind') || 'request';
+  const kind = option('kind') || 'notice';
   const replyTo = option('reply-to');
   const requestedConversationId = option('conversation-id');
 
@@ -624,8 +838,8 @@ function send(repos) {
     console.error('send requires --body or --body-file');
     return 1;
   }
-  if (kind === 'request' && !hasFlag('operator')) {
-    console.error('raw requests require --operator; recipe-driven agents must use trigger then approve');
+  if (kind === 'request') {
+    console.error('raw requests are disabled; use trigger then approve so work is bound to a verified recipe');
     return 1;
   }
   const delivered = deliverMessage(repos, {
@@ -636,7 +850,9 @@ function send(repos) {
     kind,
     replyTo,
     conversationId: requestedConversationId,
-    metadata: kind === 'request' ? { approval: 'manual-cli', approvedBy: 'local-operator' } : null,
+    id: process.env.REPOS_CHAT_AGENT_HOST === '1'
+      ? process.env.REPOS_CHAT_INTERNAL_MESSAGE_ID || null
+      : null,
   });
   if (!delivered.ok) {
     console.error(delivered.error);
@@ -688,7 +904,70 @@ function acknowledge(repos) {
   const temp = `${dest}.${process.pid}.tmp`;
   fs.writeFileSync(temp, `${JSON.stringify(message, null, 2)}\n`, 'utf8');
   fs.renameSync(temp, dest);
+  try { fs.unlinkSync(queuePath(repo, id)); } catch {}
   console.log(JSON.stringify({ ok: true, message }, null, 2));
+  return 0;
+}
+
+function validateRequest(repos) {
+  const repo = option('repo');
+  const id = option('id');
+  if (!safeRepoId(repo) || !findRepo(repos, repo) || !safeMessageId(id)) {
+    console.error('validate-request requires a verified --repo and safe --id');
+    return 1;
+  }
+  let message;
+  try { message = JSON.parse(fs.readFileSync(messagePath(repo, id), 'utf8')); }
+  catch { console.error(`request not found: ${id}`); return 1; }
+  if (message.protocol !== 'repos.chat/1' || message.version !== 3 || message.kind !== 'request' || message.to !== repo) {
+    console.error(`request ${id} is not a supported repos.chat request envelope`);
+    return 1;
+  }
+  const proposalId = message.authorization?.proposalId;
+  if (!safeProposalId(proposalId)) {
+    console.error(`request ${id} has no approved proposal authorization`);
+    return 1;
+  }
+  let proposal;
+  try { proposal = JSON.parse(fs.readFileSync(proposalPath(proposalId), 'utf8')); }
+  catch { console.error(`request ${id} references a missing proposal`); return 1; }
+  if (proposal.id !== proposalId || proposal.protocol !== 'repos.chat/proposal/1'
+      || proposal.version !== 1 || typeof proposal.payloadDigest !== 'string'
+      || proposal.payloadDigest !== proposalDigest(proposal)) {
+    console.error(`request ${id} references a mutable or malformed proposal`);
+    return 1;
+  }
+  const approval = readApproval(proposalId);
+  if (!approval || approval.protocol !== 'repos.chat/approval/1'
+      || approval.payloadDigest !== proposal.payloadDigest
+      || approval.confirmation !== approvalToken(proposal)
+      || proposal.payloadDigest !== proposalDigest(proposal)) {
+    console.error(`request ${id} has no matching content-bound human approval`);
+    return 1;
+  }
+  if (proposal.state !== 'approved' || proposal.messageId !== id
+      || proposal.from !== message.from || proposal.to !== message.to
+      || proposal.subject !== message.subject || proposal.body !== message.body
+      || proposal.exchange !== message.authorization.exchange) {
+    console.error(`request ${id} does not match its approved proposal`);
+    return 1;
+  }
+  const resolved = exchangeFor(repos, proposal.from, proposal.exchange);
+  const problem = resolved ? validateExchange(repos, resolved.source, resolved.exchange) : 'declared exchange no longer exists';
+  if (problem) {
+    console.error(`request ${id} is no longer authorized: ${problem}`);
+    return 1;
+  }
+  const currentRecipe = recipeSnapshot(resolved.exchange);
+  const currentDigest = recipeDigest(currentRecipe);
+  if (proposal.recipeDigest !== currentDigest
+      || message.authorization.recipeDigest !== currentDigest
+      || message.authorization.permission !== currentRecipe.permission
+      || JSON.stringify(proposal.recipe) !== JSON.stringify(currentRecipe)) {
+    console.error(`request ${id} is stale because its exchange authority changed`);
+    return 1;
+  }
+  console.log(JSON.stringify({ ok: true, message, proposal, recipe: currentRecipe }, null, 2));
   return 0;
 }
 
@@ -798,7 +1077,19 @@ function readPresence(repo) {
   const fresh = Number.isFinite(heartbeat) && Date.now() - heartbeat <= leaseMs;
   const watcherLive = processAlive(Number(raw.watcherPid || raw.pid));
   const workerLive = raw.state === 'working' && processAlive(Number(raw.pid));
-  const proactive = raw.proactive === true && watcherLive && (fresh || workerLive);
+  let watcherLease = null;
+  try {
+    watcherLease = JSON.parse(fs.readFileSync(
+      path.join(ROOT, '.repo-connect', 'watchers', `${repo}.json`, 'owner.json'),
+      'utf8',
+    ));
+  } catch {}
+  const leaseHeartbeat = Date.parse(watcherLease?.heartbeatAt || watcherLease?.claimedAt || '');
+  const leaseFresh = Number.isFinite(leaseHeartbeat) && Date.now() - leaseHeartbeat <= leaseMs;
+  const leaseMatches = typeof raw.leaseId === 'string'
+    && raw.leaseId === watcherLease?.ownerToken
+    && Number(raw.watcherPid || raw.pid) === Number(watcherLease?.pid);
+  const proactive = raw.proactive === true && watcherLive && leaseMatches && leaseFresh && (fresh || workerLive);
   if (!proactive && raw.state !== 'working') {
     return {
       state: 'offline',
@@ -843,8 +1134,8 @@ function help() {
   repos sync    --root DIR
   repos trigger --root DIR --from REPO --exchange ID --event EVENT --subject TEXT --body TEXT
   repos proposals --root DIR [--repo REPO] [--json] [--all]
-  repos approve --root DIR --id PROPOSAL_ID --approve PROPOSAL_ID
-  repos send    --root DIR --from REPO --to REPO --subject TEXT --body TEXT --operator
+  repos approve --root DIR --id PROPOSAL_ID --approve PROPOSAL_ID:DIGEST_PREFIX
+  repos send    --root DIR --from REPO --to REPO --kind response|notice --subject TEXT --body TEXT
   repos inbox   --root DIR --repo REPO [--json] [--all]
   repos ack     --root DIR --repo REPO --id MESSAGE_ID
   repos context --root DIR --repo REPO
@@ -865,7 +1156,7 @@ if (!repos.length) {
   console.log(`no repos.yaml found under ${ROOT}`);
   process.exit(0);
 }
-if (!['send', 'inbox', 'ack', 'context', 'status', 'graph', 'trigger', 'proposals', 'approve'].includes(cmd)) {
+if (!['send', 'inbox', 'ack', 'context', 'status', 'graph', 'trigger', 'proposals', 'approve', 'validate-request'].includes(cmd)) {
   console.log(`${C.d}${repos.length} manifests under ${ROOT}${C.x}\n`);
 }
 const code = cmd === 'sync' ? sync(repos)
@@ -873,6 +1164,7 @@ const code = cmd === 'sync' ? sync(repos)
   : cmd === 'send' ? send(repos)
   : cmd === 'inbox' ? inbox(repos)
   : cmd === 'ack' ? acknowledge(repos)
+  : cmd === 'validate-request' ? validateRequest(repos)
   : cmd === 'trigger' ? trigger(repos)
   : cmd === 'proposals' ? listProposals(repos)
   : cmd === 'approve' ? approve(repos)

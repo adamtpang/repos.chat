@@ -28,18 +28,18 @@ manifest card -> watcher lease -> durable envelope -> exclusive lock -> evidence
 
 1. **Manifest card:** `repos.yaml` declares identity, purpose, capabilities backed by real paths, and useful repository relationships.
 2. **Watcher lease:** `repos-agent watch` writes a short-lived local heartbeat. `repos status` confirms both a fresh lease and a live PID.
-3. **Durable envelope:** `repos send` writes an immutable request under `.repo-connect/mail/`. Its `conversationId` links later responses.
-4. **Exclusive lock:** the recipient claims both its repository and the request. A second host cannot duplicate the work. Locks that name a process are reclaimed as soon as that process is proven dead; the time-to-live is the fallback for legacy locks without a PID.
+3. **Durable envelope:** content-bound approval writes an immutable request under `.repo-connect/mail/`. Its `conversationId` links later responses.
+4. **Exclusive lock:** the recipient claims both its repository and the request with atomic lock directories and unguessable lease IDs. A second host cannot duplicate the work. Dead or expired owners can be reclaimed without trusting a reused PID.
 5. **Evidence reply:** the host works only inside the recipient repository and returns a structured outcome, evidence, tests, and risks.
 6. **Acknowledgement:** the original request gains `acknowledgedAt`. The envelope remains in the audit trail.
 
 An agent-originated request has an earlier authorization lifecycle:
 
 ```text
-allowed signal -> local proposal -> exact human approval -> durable request
+allowed signal -> local proposal -> content-bound human approval -> durable request
 ```
 
-`manual`, `webhook`, `ci`, and `contract-drift` are allowed trigger classes. Every one creates a proposal only. `repos approve --id ID --approve ID` is the deliberate boundary that turns it into work. A raw operator request must carry `--operator`.
+`manual`, `webhook`, `ci`, and `contract-drift` are allowed trigger classes. Every one creates a proposal only. `repos trigger` prints an `ID:DIGEST_PREFIX`; repeating that exact value in `repos approve` is the deliberate boundary that turns the reviewed bytes into work. Raw requests are disabled.
 
 ## Identity and discovery
 
@@ -91,7 +91,7 @@ Presence records live under `.repo-connect/presence/`. They are operational arti
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "protocol": "repos.chat/1",
   "id": "20260827T120000000Z-a1b2c3d4",
   "conversationId": "20260827T120000000Z-a1b2c3d4",
@@ -100,13 +100,19 @@ Presence records live under `.repo-connect/presence/`. They are operational arti
   "kind": "request",
   "subject": "Map population risk to personal metrics",
   "body": "Return a sourced metric proposal.",
-  "createdAt": "2026-08-27T12:00:00.000Z"
+  "createdAt": "2026-08-27T12:00:00.000Z",
+  "authorization": {
+    "proposalId": "20260827T115900000Z-deadbeef",
+    "exchange": "refresh-metrics",
+    "permission": "read-only",
+    "recipeDigest": "sha256-digest"
+  }
 }
 ```
 
 Message kinds are `request`, `response`, and `notice`. A response uses `replyTo` and inherits the original `conversationId`. Acknowledgement adds a timestamp but does not delete the message.
 
-Version 3 remains local-first. Messages are JSON files under the workspace root. Approved recipe requests carry proposal, exchange, and permission metadata. There is no required account, server, network call, or model-provider dependency.
+Version 3 remains local-first. Messages are JSON files under the workspace root. Approved recipe requests carry proposal, exchange, permission, and recipe-digest metadata; the host revalidates that chain against the current manifest before invoking a model. There is no required account, server, network call, or model-provider dependency.
 
 ## Connection contract
 

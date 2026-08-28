@@ -3,6 +3,8 @@ import fs from 'node:fs';
 const args = process.argv.slice(2);
 const outputIndex = args.indexOf('--output-last-message');
 if (outputIndex === -1 || !args[outputIndex + 1]) process.exit(2);
+const sandboxIndex = args.indexOf('--sandbox');
+if (process.env.EXPECT_SANDBOX && args[sandboxIndex + 1] !== process.env.EXPECT_SANDBOX) process.exit(4);
 
 let prompt = '';
 for await (const chunk of process.stdin) prompt += chunk;
