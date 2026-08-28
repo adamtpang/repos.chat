@@ -132,7 +132,7 @@ Messages are JSON files under `<root>/.repo-connect/mail/<repo>/`. They stay loc
 
 ## Run or wake one bounded Repo Rep
 
-The included Codex host adapter locks one repository and one request, gives Codex write access only to the recipient repository, requires structured evidence and test results, sends the result back through the mailbox, and acknowledges the request.
+The included Codex host adapter locks one repository and one request, gives Codex write access only to the recipient repository, requires structured evidence and test results, sends the result back through the mailbox, and acknowledges the request. Its observable child process tree is terminated before either lock is released. Interrupted requests remain open for at-least-once retry; result-addressed response IDs avoid retry collisions, and workspace claim files are audit records rather than proof that work completed.
 
 ```sh
 node agent-host.mjs run --root ~/projects --repo metrics-service --dry-run
@@ -146,6 +146,8 @@ repos-agent watch --root ~/projects --repo metrics-service
 ```
 
 The watcher refreshes `.repo-connect/presence/<repo>.json`, polls the inbox, and preserves one-worker and one-message locks. Use `--once` for a scheduled or CI check.
+
+The current Node adapter is a bounded workflow host, not a kernel container. It cleans up observable descendants, including detached Windows children. Because a deliberately daemonized POSIX process can escape process-group cleanup, `branch-pr` host runs fail closed there; `read-only` and `propose-change` recipes remain available. Strong cgroup isolation is future host work.
 
 ## Watch the protocol
 

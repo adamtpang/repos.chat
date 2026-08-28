@@ -33,6 +33,8 @@ manifest card -> watcher lease -> durable envelope -> exclusive lock -> evidence
 5. **Evidence reply:** the host works only inside the recipient repository and returns a structured outcome, evidence, tests, and risks.
 6. **Acknowledgement:** the original request gains `acknowledgedAt`. The envelope remains in the audit trail.
 
+Delivery is journaled before mail and queue state change, so an interrupted write is repaired on the next inbox read. Host claims are audit records, never trusted recovery authority: if a worker dies after local edits but before the response and acknowledgement complete, the request stays open and a later host runs the bounded request again. That is deliberate at-least-once execution. Responses use a result-digest suffix, so a retry can durably return a different valid result without colliding with the earlier attempt. The host contains and terminates the observable model process tree before releasing either lock, on successful and failed runs alike.
+
 An agent-originated request has an earlier authorization lifecycle:
 
 ```text
@@ -148,6 +150,7 @@ Codex, Claude, a CI job, or a local scheduler can implement this lifecycle. The 
 - Do not put credentials, private personal data, or production secrets in messages.
 - External communication, deployment, purchases, destructive changes, and privileged operations require the same approval they would require without repos.chat.
 - The receiver must not edit the sender's repository unless the host explicitly grants that scope.
+- The Node host tears down the process tree it can observe, but it is not a kernel container. A deliberately daemonized POSIX process can escape a process group, so the current adapter fails closed for `branch-pr` execution there. `read-only` and `propose-change` remain available; strong cgroup isolation remains future host work.
 - Responses should cite concrete file paths, commits, test output, or source URLs.
 - Triggers and proposals never grant authority. Every recipe currently requires `approval: human-required`.
 - Acknowledgement means the message was handled, not that its claims are true.

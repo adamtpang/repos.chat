@@ -297,6 +297,7 @@ function graph(repos) {
 // durable inbox without a server or provider-specific API.
 const MAIL_ROOT = path.join(ROOT, '.repo-connect', 'mail');
 const QUEUE_ROOT = path.join(ROOT, '.repo-connect', 'queue');
+const DELIVERY_ROOT = path.join(ROOT, '.repo-connect', 'delivery');
 const PRESENCE_ROOT = path.join(ROOT, '.repo-connect', 'presence');
 const PROPOSAL_ROOT = path.join(ROOT, '.repo-connect', 'proposals');
 const APPROVAL_ROOT = path.join(ROOT, '.repo-connect', 'approvals');
@@ -333,11 +334,67 @@ function safeProposalId(id) {
   return typeof id === 'string' && /^[A-Za-z0-9_-]+$/.test(id);
 }
 
+function syncDirectory(directory) {
+  if (process.platform === 'win32') return;
+  let fd = null;
+  try {
+    fd = fs.openSync(directory, 'r');
+    fs.fsyncSync(fd);
+  } finally {
+    if (fd !== null) fs.closeSync(fd);
+  }
+}
+
+function syncProtocolPath(file) {
+  if (process.platform === 'win32') {
+    let fd = null;
+    try {
+      fd = fs.openSync(file, 'rs+');
+      fs.fsyncSync(fd);
+    } finally {
+      if (fd !== null) fs.closeSync(fd);
+    }
+  }
+  syncDirectory(path.dirname(file));
+}
+
+function ensureDurableDirectory(directory) {
+  const missing = [];
+  let cursor = path.resolve(directory);
+  while (!fs.existsSync(cursor)) {
+    missing.push(cursor);
+    const parent = path.dirname(cursor);
+    if (parent === cursor) break;
+    cursor = parent;
+  }
+  for (const entry of missing.reverse()) {
+    try { fs.mkdirSync(entry); }
+    catch (error) { if (error.code !== 'EEXIST') throw error; }
+    syncDirectory(path.dirname(entry));
+  }
+}
+
 function writeJsonAtomic(dest, value) {
-  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  ensureDurableDirectory(path.dirname(dest));
   const temp = `${dest}.${process.pid}.tmp`;
-  fs.writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
-  fs.renameSync(temp, dest);
+  let fd = null;
+  try {
+    fd = fs.openSync(
+      temp,
+      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_SYNC,
+      0o600,
+    );
+    fs.writeFileSync(fd, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = null;
+    fs.renameSync(temp, dest);
+    syncProtocolPath(dest);
+  } catch (error) {
+    if (fd !== null) try { fs.closeSync(fd); } catch {}
+    try { fs.unlinkSync(temp); } catch {}
+    throw error;
+  }
 }
 
 function containedEvidence(repoDir, claimedPath) {
@@ -402,10 +459,110 @@ function queuePath(to, id) {
   return path.join(QUEUE_ROOT, to, `${id}.json`);
 }
 
+function deliveryPath(to, id) {
+  return path.join(DELIVERY_ROOT, to, `${id}.json`);
+}
+
+function sameMessage(left, right) {
+  return ['id', 'from', 'to', 'kind', 'subject', 'body', 'replyTo', 'conversationId']
+    .every(key => (left?.[key] ?? null) === (right?.[key] ?? null))
+    && JSON.stringify(left?.authorization || null) === JSON.stringify(right?.authorization || null);
+}
+
+function writeMessageExclusive(message) {
+  const dest = messagePath(message.to, message.id);
+  ensureDurableDirectory(path.dirname(dest));
+  let fd = null;
+  try {
+    fd = fs.openSync(
+      dest,
+      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_SYNC,
+      0o600,
+    );
+    fs.writeFileSync(fd, `${JSON.stringify(message, null, 2)}\n`, 'utf8');
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = null;
+    syncProtocolPath(dest);
+    return { ok: true, message };
+  } catch (error) {
+    if (fd !== null) {
+      try { fs.closeSync(fd); } catch {}
+      try { fs.unlinkSync(dest); } catch {}
+    }
+    if (error.code !== 'EEXIST') return { ok: false, error: `could not deliver message: ${error.message}` };
+    let existing;
+    try { existing = JSON.parse(fs.readFileSync(dest, 'utf8')); }
+    catch { return { ok: false, error: `message id already exists but is unreadable: ${message.id}` }; }
+    if (!sameMessage(existing, message)) {
+      return { ok: false, error: `message id already exists with different content: ${message.id}` };
+    }
+    return { ok: true, message: existing, reused: true };
+  }
+}
+
+function writeDeliveryIntent(message) {
+  const dest = deliveryPath(message.to, message.id);
+  ensureDurableDirectory(path.dirname(dest));
+  let fd = null;
+  try {
+    fd = fs.openSync(
+      dest,
+      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_SYNC,
+      0o600,
+    );
+    fs.writeFileSync(fd, `${JSON.stringify(message, null, 2)}\n`, 'utf8');
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = null;
+    syncProtocolPath(dest);
+    return { ok: true };
+  } catch (error) {
+    if (fd !== null) {
+      try { fs.closeSync(fd); } catch {}
+      try { fs.unlinkSync(dest); } catch {}
+    }
+    if (error.code !== 'EEXIST') return { ok: false, error: `could not journal message delivery: ${error.message}` };
+    let existing;
+    try { existing = JSON.parse(fs.readFileSync(dest, 'utf8')); }
+    catch { return { ok: false, error: `delivery journal is unreadable: ${message.id}` }; }
+    return sameMessage(existing, message)
+      ? { ok: true, reused: true }
+      : { ok: false, error: `delivery journal conflicts with message: ${message.id}` };
+  }
+}
+
+function repairDeliveries(repo) {
+  const dir = path.join(DELIVERY_ROOT, repo);
+  let names = [];
+  try { names = fs.readdirSync(dir).filter(name => name.endsWith('.json')); } catch { return 0; }
+  let repaired = 0;
+  for (const name of names) {
+    try {
+      const message = JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8'));
+      if (!safeMessageId(message.id) || name !== `${message.id}.json` || message.to !== repo
+          || message.protocol !== 'repos.chat/1' || message.version !== 3
+          || !MESSAGE_KINDS.has(message.kind)) continue;
+      const written = writeMessageExclusive(message);
+      if (!written.ok) continue;
+      if (!written.message.acknowledgedAt) {
+        writeJsonAtomic(queuePath(repo, message.id), { id: message.id, to: repo });
+      }
+      fs.unlinkSync(deliveryPath(repo, message.id));
+      syncDirectory(path.join(DELIVERY_ROOT, repo));
+      repaired++;
+    } catch {
+      // Keep the journal for inspection or a later successful repair.
+    }
+  }
+  return repaired;
+}
+
 function ensureQueue(repo) {
+  repairDeliveries(repo);
   const queueDir = path.join(QUEUE_ROOT, repo);
   if (fs.existsSync(queueDir)) return queueDir;
-  fs.mkdirSync(queueDir, { recursive: true });
+  ensureDurableDirectory(queueDir);
   const mailDir = path.join(MAIL_ROOT, repo);
   let names = [];
   try { names = fs.readdirSync(mailDir).filter(name => name.endsWith('.json')); } catch { return queueDir; }
@@ -491,12 +648,17 @@ function readApproval(id) {
 
 function writeApprovalExclusive(record) {
   const dest = approvalPath(record.proposalId);
-  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  ensureDurableDirectory(path.dirname(dest));
   try {
-    const fd = fs.openSync(dest, 'wx');
+    const fd = fs.openSync(
+      dest,
+      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_SYNC,
+      0o600,
+    );
     fs.writeFileSync(fd, `${JSON.stringify(record, null, 2)}\n`, 'utf8');
     fs.fsyncSync(fd);
     fs.closeSync(fd);
+    syncProtocolPath(dest);
     return { ok: true, record };
   } catch (error) {
     if (error.code !== 'EEXIST') return { ok: false, error: error.message };
@@ -771,29 +933,19 @@ function deliverMessage(repos, input) {
     ...(replyTo ? { replyTo } : {}),
     ...(input.metadata ? { authorization: input.metadata } : {}),
   };
-  const dest = messagePath(to, id);
-  fs.mkdirSync(path.dirname(dest), { recursive: true });
-  try {
-    const fd = fs.openSync(dest, 'wx');
-    fs.writeFileSync(fd, `${JSON.stringify(message, null, 2)}\n`, 'utf8');
-    fs.fsyncSync(fd);
-    fs.closeSync(fd);
-  } catch (error) {
-    if (error.code !== 'EEXIST') return { ok: false, error: `could not deliver message: ${error.message}` };
-    let existing;
-    try { existing = JSON.parse(fs.readFileSync(dest, 'utf8')); }
-    catch { return { ok: false, error: `message id already exists but is unreadable: ${id}` }; }
-    const same = ['id', 'from', 'to', 'kind', 'subject', 'body', 'replyTo', 'conversationId']
-      .every(key => (existing[key] ?? null) === (message[key] ?? null))
-      && JSON.stringify(existing.authorization || null) === JSON.stringify(message.authorization || null);
-    if (!same) return { ok: false, error: `message id already exists with different content: ${id}` };
-    if (!existing.acknowledgedAt) {
-      writeJsonAtomic(queuePath(existing.to, existing.id), { id: existing.id, to: existing.to });
-    }
-    return { ok: true, message: existing, reused: true };
+  const intent = writeDeliveryIntent(message);
+  if (!intent.ok) return intent;
+  const written = writeMessageExclusive(message);
+  if (!written.ok) return written;
+  if (!written.message.acknowledgedAt) {
+    writeJsonAtomic(queuePath(to, id), { id, to });
   }
-  writeJsonAtomic(queuePath(to, id), { id, to });
-  return { ok: true, message };
+  try {
+    fs.unlinkSync(deliveryPath(to, id));
+    syncDirectory(path.join(DELIVERY_ROOT, to));
+  }
+  catch (error) { return { ok: false, error: `message delivered but delivery journal could not close: ${error.message}` }; }
+  return { ok: true, message: written.message, reused: written.reused || intent.reused || false };
 }
 
 function send(repos) {
@@ -901,10 +1053,11 @@ function acknowledge(repos) {
     return 1;
   }
   if (!message.acknowledgedAt) message.acknowledgedAt = new Date().toISOString();
-  const temp = `${dest}.${process.pid}.tmp`;
-  fs.writeFileSync(temp, `${JSON.stringify(message, null, 2)}\n`, 'utf8');
-  fs.renameSync(temp, dest);
-  try { fs.unlinkSync(queuePath(repo, id)); } catch {}
+  writeJsonAtomic(dest, message);
+  try {
+    fs.unlinkSync(queuePath(repo, id));
+    syncDirectory(path.join(QUEUE_ROOT, repo));
+  } catch {}
   console.log(JSON.stringify({ ok: true, message }, null, 2));
   return 0;
 }

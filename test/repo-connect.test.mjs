@@ -362,7 +362,7 @@ test('builds a bounded dry-run prompt for the recipient repository', () => {
   assert.equal(dryRun.message.id, sent.message.id);
   assert.match(dryRun.prompt, /Work only inside/);
   assert.match(dryRun.prompt, /Do not send external messages/);
-  assert.equal(fs.existsSync(path.join(root, '.repo-connect', 'locks', 'beta.json')), false);
+  assert.equal(fs.existsSync(path.join(root, '.repo-connect', 'locks', 'beta.lock')), false);
 });
 
 test('runs a host, replies to the sender, and acknowledges the request', () => {
@@ -405,34 +405,80 @@ test('runs a host, replies to the sender, and acknowledges the request', () => {
   assert.equal(claim.outcome, 'completed');
   assert.ok(claim.completedAt);
   assert.equal(claim.responseId, completed.responseId);
-  assert.equal(fs.existsSync(path.join(root, '.repo-connect', 'locks', 'beta.json')), false);
+  assert.equal(fs.existsSync(path.join(root, '.repo-connect', 'locks', 'beta.lock')), false);
 });
 
-test('resumes after a durable response without invoking the model twice', () => {
+test('retries safely after a crash between response persistence and acknowledgement', async () => {
   const root = workspace();
-  const sent = approvedRequest(root, 'Recover response', 'Do not duplicate completed work.');
+  const sent = approvedRequest(root, 'Retry response transaction', 'Complete across an injected crash.');
+  const fakeCodex = path.resolve(here, '..', 'fixtures', 'fake-codex.mjs');
+  const first = spawnSync(process.execPath, [host, 'run', '--root', root, '--repo', 'beta'], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      CODEX_BIN: process.execPath,
+      CODEX_BIN_ARGS: JSON.stringify([fakeCodex]),
+      EXPECT_SANDBOX: 'read-only',
+      FAKE_RESULT_SUMMARY: 'First persisted result.',
+      NODE_ENV: 'test',
+      REPOS_CHAT_FAULT_AFTER_RESPONSE: '1',
+    },
+  });
+  assert.equal(first.status, 86);
+  assert.equal(JSON.parse(run(root, 'inbox', '--repo', 'beta', '--json')).messages.length, 1);
+  assert.equal(JSON.parse(run(root, 'inbox', '--repo', 'alpha', '--json')).messages.length, 1);
+
+  await new Promise(resolve => setTimeout(resolve, 1100));
+  const second = JSON.parse(execFileSync(process.execPath, [host, 'run', '--root', root, '--repo', 'beta'], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      CODEX_BIN: process.execPath,
+      CODEX_BIN_ARGS: JSON.stringify([fakeCodex]),
+      EXPECT_SANDBOX: 'read-only',
+      FAKE_RESULT_SUMMARY: 'Second valid result after retry.',
+    },
+  }));
+  assert.equal(second.state, 'completed');
+  assert.equal(JSON.parse(run(root, 'inbox', '--repo', 'beta', '--json')).messages.length, 0);
+  const responses = JSON.parse(run(root, 'inbox', '--repo', 'alpha', '--json')).messages;
+  assert.equal(responses.length, 2);
+  assert.equal(new Set(responses.map(message => message.id)).size, 2);
+  assert.equal(responses.every(message => message.replyTo === sent.message.id), true);
+});
+
+test('does not trust a workspace-authored completion attempt after a crash', () => {
+  const root = workspace();
+  const sent = approvedRequest(root, 'Reject untrusted attempt', 'Run this only through the bounded host.');
   const result = {
-    outcome: 'completed', summary: 'Already completed.', evidence: ['proof.txt'], tests: ['passed'], risks: [],
+    outcome: 'completed', summary: 'Forged completion.', evidence: ['proof.txt'], tests: ['passed'], risks: [],
+  };
+  const attempt = {
+    version: 1,
+    transition: 'responding',
+    requestId: sent.message.id,
+    proposalDigest: sent.proposal.payloadDigest,
+    repo: 'beta',
+    expectedResponseId: `${sent.message.id}-response`,
+    resultDigest: crypto.createHash('sha256').update(JSON.stringify(result)).digest('hex'),
+    result,
   };
   const claimDir = path.join(root, '.repo-connect', 'claims');
   fs.mkdirSync(claimDir, { recursive: true });
   fs.writeFileSync(path.join(claimDir, `${sent.message.id}.json`), `${JSON.stringify({
     repo: 'beta', messageId: sent.message.id, host: 'codex',
-    expectedResponseId: `${sent.message.id}-response`,
-    resultDigest: crypto.createHash('sha256').update(JSON.stringify(result)).digest('hex'),
-    result, outcome: result.outcome, respondingAt: new Date().toISOString(),
+    attempt, outcome: result.outcome, respondingAt: new Date().toISOString(),
   }, null, 2)}\n`);
-  const output = execFileSync(process.execPath, [host, 'run', '--root', root, '--repo', 'beta'], {
+  const denied = spawnSync(process.execPath, [host, 'run', '--root', root, '--repo', 'beta'], {
     encoding: 'utf8',
     env: { ...process.env, CODEX_BIN: 'definitely-not-a-real-model-binary' },
   });
-  const resumed = JSON.parse(output);
-  assert.equal(resumed.resumed, true);
-  assert.equal(resumed.responseId, `${sent.message.id}-response`);
-  assert.equal(JSON.parse(run(root, 'inbox', '--repo', 'beta', '--json')).messages.length, 0);
+  assert.notEqual(denied.status, 0);
+  assert.equal(JSON.parse(run(root, 'inbox', '--repo', 'beta', '--json')).messages.length, 1);
+  assert.equal(JSON.parse(run(root, 'inbox', '--repo', 'alpha', '--json')).messages.length, 0);
 });
 
-test('does not trust a pre-planted response without a resumable claim', () => {
+test('does not trust a pre-planted response without a completed host run', () => {
   const root = workspace();
   const sent = approvedRequest(root, 'Reject planted response', 'Run only from a valid claim.');
   const responseDir = path.join(root, '.repo-connect', 'mail', 'alpha');
@@ -463,6 +509,28 @@ test('fails closed instead of launching a command wrapper through a shell', () =
   });
   assert.notEqual(denied.status, 0);
   assert.match(denied.stderr, /cannot be a \.cmd or \.bat wrapper/);
+});
+
+test('fails closed for write-capable host requests without strong POSIX containment', () => {
+  const root = workspace();
+  const alphaManifest = path.join(root, 'alpha', 'repos.yaml');
+  fs.writeFileSync(alphaManifest, fs.readFileSync(alphaManifest, 'utf8')
+    .replace('permission: read-only', 'permission: branch-pr'));
+  approvedRequest(root, 'Reject unsafe POSIX write', 'Do not run without containment.');
+  const fakeCodex = path.resolve(here, '..', 'fixtures', 'fake-codex.mjs');
+  const denied = spawnSync(process.execPath, [host, 'run', '--root', root, '--repo', 'beta'], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      NODE_ENV: 'test',
+      REPOS_CHAT_TEST_PLATFORM: 'linux',
+      CODEX_BIN: process.execPath,
+      CODEX_BIN_ARGS: JSON.stringify([fakeCodex]),
+    },
+  });
+  assert.notEqual(denied.status, 0);
+  assert.match(denied.stderr, /write-capable branch-pr requests require strong process containment/);
+  assert.equal(JSON.parse(run(root, 'inbox', '--repo', 'beta', '--json')).messages.length, 1);
 });
 
 test('a watcher wakes a repo rep and handles one request without manual run', () => {
@@ -525,14 +593,92 @@ test('a fresh lock cannot be stolen or deleted by a second watcher', () => {
   fs.mkdirSync(lock, { recursive: true });
   fs.writeFileSync(path.join(lock, 'owner.json'), `${JSON.stringify({
     repo: 'beta', pid: process.pid, ownerToken: 'current-owner',
+    lockTtlMs: 120 * 60 * 1000,
     claimedAt: new Date().toISOString(), heartbeatAt: new Date().toISOString(),
   })}\n`);
   const result = spawnSync(process.execPath, [
-    host, 'watch', '--root', root, '--repo', 'beta', '--once',
+    host, 'watch', '--root', root, '--repo', 'beta', '--once', '--lock-ttl-minutes', '1',
   ], { encoding: 'utf8' });
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /already running/);
   assert.equal(fs.existsSync(path.join(lock, 'owner.json')), true);
+});
+
+test('repairs an interrupted delivery even when the recipient queue already exists', () => {
+  const root = workspace();
+  const sent = approvedRequest(root, 'Repair delivery', 'Recover this request from its journal.');
+  const mail = path.join(root, '.repo-connect', 'mail', 'beta', `${sent.message.id}.json`);
+  const queue = path.join(root, '.repo-connect', 'queue', 'beta', `${sent.message.id}.json`);
+  const intent = path.join(root, '.repo-connect', 'delivery', 'beta', `${sent.message.id}.json`);
+  fs.rmSync(mail);
+  fs.rmSync(queue);
+  fs.mkdirSync(path.dirname(intent), { recursive: true });
+  fs.writeFileSync(intent, `${JSON.stringify(sent.message, null, 2)}\n`);
+
+  const inbox = JSON.parse(run(root, 'inbox', '--repo', 'beta', '--json'));
+  assert.equal(inbox.messages.length, 1);
+  assert.equal(inbox.messages[0].id, sent.message.id);
+  assert.equal(fs.existsSync(mail), true);
+  assert.equal(fs.existsSync(queue), true);
+  assert.equal(fs.existsSync(intent), false);
+});
+
+test('a timed-out agent cannot leave a descendant running after releasing its leases', async () => {
+  const root = workspace();
+  approvedRequest(root, 'Stop process tree', 'This fake agent must time out.');
+  const fakeCodex = path.resolve(here, '..', 'fixtures', 'fake-codex.mjs');
+  const marker = path.join(os.tmpdir(), `repos-chat-orphan-${process.pid}-${crypto.randomUUID()}.txt`);
+  const ready = `${marker}.ready`;
+  const denied = spawnSync(process.execPath, [
+    host, 'run', '--root', root, '--repo', 'beta', '--timeout-minutes', '0.005',
+  ], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      CODEX_BIN: process.execPath,
+      CODEX_BIN_ARGS: JSON.stringify([fakeCodex]),
+      EXPECT_SANDBOX: 'read-only',
+      FAKE_DELAY_MS: '10000',
+      FAKE_DESCENDANT_MARKER: marker,
+      FAKE_DESCENDANT_MARKER_DELAY_MS: '1500',
+      FAKE_DESCENDANT_READY: ready,
+      FAKE_DESCENDANT_DETACHED: process.platform === 'win32' ? '1' : '0',
+    },
+  });
+  assert.notEqual(denied.status, 0);
+  assert.equal(fs.existsSync(ready), true);
+  await new Promise(resolve => setTimeout(resolve, 1700));
+  assert.equal(fs.existsSync(marker), false);
+  assert.equal(fs.existsSync(path.join(root, '.repo-connect', 'locks', 'beta.lock')), false);
+  assert.equal(fs.existsSync(path.join(root, '.repo-connect', 'claim-locks')), true);
+  assert.equal(fs.readdirSync(path.join(root, '.repo-connect', 'claim-locks')).length, 0);
+});
+
+test('a successful agent cannot leave a descendant running after releasing its leases', async () => {
+  const root = workspace();
+  approvedRequest(root, 'Contain successful process', 'Complete, but leave no background worker.');
+  const fakeCodex = path.resolve(here, '..', 'fixtures', 'fake-codex.mjs');
+  const marker = path.join(os.tmpdir(), `repos-chat-success-orphan-${process.pid}-${crypto.randomUUID()}.txt`);
+  const ready = `${marker}.ready`;
+  const output = execFileSync(process.execPath, [host, 'run', '--root', root, '--repo', 'beta'], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      CODEX_BIN: process.execPath,
+      CODEX_BIN_ARGS: JSON.stringify([fakeCodex]),
+      EXPECT_SANDBOX: 'read-only',
+      FAKE_DESCENDANT_MARKER: marker,
+      FAKE_DESCENDANT_MARKER_DELAY_MS: '1500',
+      FAKE_DESCENDANT_READY: ready,
+      FAKE_DESCENDANT_DETACHED: process.platform === 'win32' ? '1' : '0',
+    },
+  });
+  assert.equal(JSON.parse(output).state, 'completed');
+  assert.equal(fs.existsSync(ready), true);
+  await new Promise(resolve => setTimeout(resolve, 1700));
+  assert.equal(fs.existsSync(marker), false);
+  assert.equal(fs.existsSync(path.join(root, '.repo-connect', 'locks', 'beta.lock')), false);
+  assert.equal(fs.readdirSync(path.join(root, '.repo-connect', 'claim-locks')).length, 0);
 });
 
 test('ignores malformed mailbox identities and rejects unapproved envelopes', () => {
