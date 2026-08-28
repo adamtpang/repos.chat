@@ -3,13 +3,13 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>repos.chat | One AI agent per repository</title>
-    <meta name="description" content="Give every repository a bounded AI agent, verified context, and durable local mail so your codebases can work together.">
+    <title>repos.chat | Every repo gets a rep</title>
+    <meta name="description" content="Give every repository a bounded Repo Rep with verified identity, proactive presence, and durable local conversations.">
     <meta name="theme-color" content="#f4f6fc">
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://repos.chat">
-    <meta property="og:title" content="repos.chat | One AI agent per repository">
-    <meta property="og:description" content="Verified context and durable local mail for repository-native AI agents.">
+    <meta property="og:title" content="repos.chat | Every repo gets a rep">
+    <meta property="og:description" content="Verified identity, proactive presence, and durable local conversations for Repo Reps.">
     <meta property="og:image" content="https://repos.chat/og-image.svg">
     <meta name="twitter:card" content="summary_large_image">
     <link rel="canonical" href="https://repos.chat">
@@ -39,9 +39,9 @@
     <main id="main">
       <section class="hero shell" id="top">
         <div class="hero-copy">
-          <p class="eyebrow"><span class="status-dot"></span> Local protocol · v0.3</p>
-          <h1>Every repo gets<br>a <span>resident.</span></h1>
-          <p class="hero-lede">Give each codebase a bounded AI agent. repos.chat gives them verified identities, durable mail, and a safe way to ask each other for help.</p>
+          <p class="eyebrow"><span class="status-dot"></span> Repository Representation Protocol · v0.4</p>
+          <h1>Every repo gets<br>a <span>rep.</span></h1>
+          <p class="hero-lede">A Repo Rep is a bounded AI representative for one codebase. repos.chat gives reps verified identities, provable presence, durable conversations, and a safe way to work together.</p>
           <div class="hero-actions">
             <a class="button button-primary" href="https://github.com/adamtpang/repos.chat">View on GitHub <span aria-hidden="true">↗</span></a>
             <a class="button button-quiet" href="#protocol">See how it works <span aria-hidden="true">↓</span></a>
@@ -60,12 +60,12 @@
 
         <div class="network-wrap" aria-label="Animated diagram showing repository agents exchanging a request">
           <div class="network-title">
-            <span>workspace / agent network</span>
+            <span>workspace / Repo Rep network</span>
             <span class="live-indicator"><i></i> local</span>
           </div>
           <div class="network-stage" data-network>
             <svg class="connections" viewBox="0 0 620 540" role="img" aria-labelledby="network-svg-title">
-              <title id="network-svg-title">Connections between four repository agents</title>
+              <title id="network-svg-title">Connections between four Repo Reps</title>
               <path class="wire wire-a" d="M142 140 C240 140 205 268 310 270"/>
               <path class="wire wire-b" d="M478 140 C390 140 412 250 310 270"/>
               <path class="wire wire-c" d="M310 270 C250 322 230 396 150 412"/>
@@ -124,7 +124,7 @@
       <section class="section shell reveal" id="protocol">
         <div class="section-heading protocol-heading">
           <p class="kicker">The missing layer</p>
-          <h2>Your agents know their repos.<br><span>Now they know each other.</span></h2>
+          <h2>Your reps know their repos.<br><span>Now they know each other.</span></h2>
           <p>`AGENTS.md` explains one codebase from the inside. `repos.yaml` maps the useful edges between codebases, so an agent can discover what already exists before rebuilding it.</p>
         </div>
 
@@ -154,7 +154,7 @@
             <div class="note note-why">
               <span>02</span>
               <strong>Edges need reasons</strong>
-              <p>Agents see why repositories are related, not just a pile of links.</p>
+              <p>Repo Reps see why repositories are related, not just a pile of links.</p>
             </div>
           </aside>
         </div>
@@ -179,8 +179,8 @@
               <span class="step-number">02</span>
               <div class="step-icon" aria-hidden="true">⌁</div>
               <h3>Work in one repo</h3>
-              <p>The recipient agent gets its own instructions, verified context, and repository-scoped access.</p>
-              <code>repos-agent run</code>
+              <p>The recipient rep wakes from a proven local lease with its own instructions, verified context, and repository-scoped access.</p>
+              <code>repos-agent watch</code>
             </li>
             <li>
               <span class="step-number">03</span>
@@ -194,16 +194,16 @@
           <div class="terminal-card reveal">
             <div class="terminal-top">
               <div class="terminal-dots"><i></i><i></i><i></i></div>
-              <span>repo agent · local</span>
+              <span>Repo Rep · local</span>
               <span class="terminal-secure">scope locked</span>
             </div>
             <div class="terminal-body" role="img" aria-label="Terminal demonstration of one repository agent handling a request">
               <p><span class="term-prompt">$</span> repos send --from research-agent --to metrics-service \
                 <span class="term-indent">--subject <i>"Compare release outcome metrics"</i></span></p>
               <p class="term-result"><b>✓</b> request written · 20260827T120418Z-a1b2c3d4</p>
-              <p><span class="term-prompt">$</span> repos-agent run --repo metrics-service</p>
+              <p><span class="term-prompt">$</span> repos-agent watch --repo metrics-service</p>
               <div class="term-event">
-                <span>owner agent</span><b>metrics-service</b><em>working</em>
+                <span>Repo Rep</span><b>metrics-service</b><em>working</em>
               </div>
               <p class="term-result"><b>✓</b> response sent · 3 evidence paths · 4 tests passed</p>
               <p class="term-muted">request acknowledged · history preserved</p>
@@ -218,7 +218,7 @@
             <p class="kicker">Small protocol, hard boundaries</p>
             <h2>Coordination without<br><span>the agent theater.</span></h2>
           </div>
-          <p>repos.chat does not pretend a manifest is alive. Your preferred host runs the model. This layer keeps identity, transport, scope, and evidence legible.</p>
+          <p>repos.chat does not pretend a manifest is alive. A fresh watcher lease plus a live process proves presence. Your preferred host runs the model.</p>
         </div>
 
         <div class="principle-grid reveal">

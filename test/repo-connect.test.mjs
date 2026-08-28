@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const cli = path.resolve(here, '..', 'repos.mjs');
 const host = path.resolve(here, '..', 'agent-host.mjs');
+const dashboard = path.resolve(here, '..', 'dashboard.mjs');
 
 function manifest(repo, kin) {
   return `repo: ${repo}\nis: Test repository ${repo}\nprovides:\n  - id: proof\n    what: test proof\n    at: proof.txt\nkin:\n  - repo: ${kin}\n    why: test relationship\n`;
@@ -38,7 +39,7 @@ test('verifies evidence-backed manifests', () => {
   assert.match(output, /2 claims confirmed by a real path, 0 unverifiable, 0 broken/);
 });
 
-test('reports whether a repository has an assigned owner identity', () => {
+test('reports whether a repository has an assigned Repo Rep', () => {
   const root = workspace();
   const result = JSON.parse(run(root, 'status', '--repo', 'beta', '--json'));
   assert.equal(result.repo, 'beta');
@@ -46,12 +47,15 @@ test('reports whether a repository has an assigned owner identity', () => {
   assert.equal(result.manifest.valid, true);
   assert.equal(result.instructions.agents, true);
   assert.equal(result.connections, 1);
+  assert.equal(result.role, 'repo-rep');
+  assert.equal(result.presence.state, 'offline');
+  assert.equal(result.presence.proactive, false);
 });
 
 test('prints command help without requiring a workspace', () => {
   const output = execFileSync(process.execPath, [cli, '--help'], { encoding: 'utf8' });
   assert.match(output, /repos status/);
-  assert.match(output, /Assignment does not mean a model process is always running/);
+  assert.match(output, /live watcher lease makes it proactive and observable/);
 });
 
 test('sends, reads, and acknowledges durable messages', () => {
@@ -67,6 +71,9 @@ test('sends, reads, and acknowledges durable messages', () => {
 
   assert.equal(sent.ok, true);
   assert.equal(sent.message.to, 'beta');
+  assert.equal(sent.message.version, 2);
+  assert.equal(sent.message.protocol, 'repos.chat/1');
+  assert.equal(sent.message.conversationId, sent.message.id);
 
   const open = JSON.parse(run(root, 'inbox', '--repo', 'beta', '--json'));
   assert.equal(open.messages.length, 1);
@@ -181,6 +188,7 @@ test('runs a host, replies to the sender, and acknowledges the request', () => {
   assert.equal(sender.messages.length, 1);
   assert.equal(sender.messages[0].kind, 'response');
   assert.equal(sender.messages[0].replyTo, sent.message.id);
+  assert.equal(sender.messages[0].conversationId, sent.message.conversationId);
 
   const claim = JSON.parse(fs.readFileSync(
     path.join(root, '.repo-connect', 'claims', `${sent.message.id}.json`),
@@ -188,5 +196,65 @@ test('runs a host, replies to the sender, and acknowledges the request', () => {
   ));
   assert.equal(claim.outcome, 'completed');
   assert.ok(claim.completedAt);
+  assert.equal(claim.responseId, completed.responseId);
   assert.equal(fs.existsSync(path.join(root, '.repo-connect', 'locks', 'beta.json')), false);
+});
+
+test('a watcher wakes a repo rep and handles one request without manual run', () => {
+  const root = workspace();
+  const sent = JSON.parse(run(
+    root,
+    'send',
+    '--from', 'alpha',
+    '--to', 'beta',
+    '--subject', 'Wake automatically',
+    '--body', 'Return verified evidence.',
+  ));
+  const fakeCodex = path.resolve(here, '..', 'fixtures', 'fake-codex.mjs');
+  const output = execFileSync(process.execPath, [
+    host,
+    'watch',
+    '--root', root,
+    '--repo', 'beta',
+    '--once',
+  ], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      CODEX_BIN: process.execPath,
+      CODEX_BIN_ARGS: JSON.stringify([fakeCodex]),
+    },
+  });
+  const watched = JSON.parse(output);
+  assert.equal(watched.watched, true);
+
+  const sender = JSON.parse(run(root, 'inbox', '--repo', 'alpha', '--json'));
+  assert.equal(sender.messages.length, 1);
+  assert.equal(sender.messages[0].replyTo, sent.message.id);
+  const status = JSON.parse(run(root, 'status', '--repo', 'beta', '--json'));
+  assert.equal(status.presence.state, 'offline');
+  assert.equal(status.presence.lastOutcome, 'completed');
+});
+
+test('omits filesystem paths from inspector graph nodes', () => {
+  const root = workspace();
+  run(
+    root,
+    'send',
+    '--from', 'alpha',
+    '--to', 'beta',
+    '--subject', 'Visible local envelope',
+    '--body', 'This body is visible only in the localhost inspector.',
+  );
+  const output = execFileSync(process.execPath, [
+    dashboard,
+    '--root', root,
+    '--snapshot',
+  ], { encoding: 'utf8' });
+  const result = JSON.parse(output);
+  assert.equal(result.protocol, 'repos.chat/inspector/1');
+  assert.equal(result.summary.repositories, 2);
+  assert.equal(result.summary.assigned, 2);
+  assert.equal(result.messages.length, 1);
+  assert.equal('path' in result.nodes[0], false);
 });

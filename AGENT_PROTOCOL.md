@@ -1,18 +1,43 @@
-# Repository Agent Protocol
+# Repository Representation Protocol
 
 ## Goal
 
-Give every repository one bounded AI agent that understands its own code, can discover related repositories, can exchange durable requests with their agents, and can prove what work it completed.
+Give every repository one bounded **Repo Rep** that understands its own code, can discover related repositories, can exchange durable requests with their reps, and can prove what work it completed.
 
-The repository is the agent's scope. `repos.yaml` is its identity and capability manifest. `AGENTS.md` and `CLAUDE.md` are its local operating instructions. `repos.chat` is the graph and message transport. The model runtime is replaceable.
+The repository is the rep's scope. `repos.yaml` is its identity and capability card. `AGENTS.md` and `CLAUDE.md` are its local operating instructions. `repos.chat` is the graph, mailbox, presence lease, and audit trail. The model runtime is replaceable.
 
-## The four parts
+“Rep” means representative, not autonomous owner. A Repo Rep speaks for a repository's documented purpose and capabilities within the permissions granted by its human operator.
 
-### 1. Identity
+## What the states prove
+
+| State | Meaning | Observable proof |
+| --- | --- | --- |
+| assigned | The repository has an identity and instructions | Valid `repos.yaml` plus `AGENTS.md` or `CLAUDE.md` |
+| offline | No proactive runtime is currently proven | Missing, expired, or dead watcher lease |
+| idle | A watcher is alive and polling for bounded work | Fresh presence heartbeat plus a live local PID |
+| working | One host is handling one request | Live watcher and worker PIDs, repository lock, and message claim |
+| blocked | The last attempt could not safely complete | Structured blocked or declined outcome in presence and claim records |
+
+Assignment is configuration. Proactivity is runtime evidence. A model cannot promote itself to “awake” by saying so.
+
+## The six-step lifecycle
+
+```text
+manifest card -> watcher lease -> durable envelope -> exclusive lock -> evidence reply -> acknowledgement
+```
+
+1. **Manifest card:** `repos.yaml` declares identity, purpose, capabilities backed by real paths, and useful repository relationships.
+2. **Watcher lease:** `repos-agent watch` writes a short-lived local heartbeat. `repos status` confirms both a fresh lease and a live PID.
+3. **Durable envelope:** `repos send` writes an immutable request under `.repo-connect/mail/`. Its `conversationId` links later responses.
+4. **Exclusive lock:** the recipient claims both its repository and the request. A second host cannot duplicate the work.
+5. **Evidence reply:** the host works only inside the recipient repository and returns a structured outcome, evidence, tests, and risks.
+6. **Acknowledgement:** the original request gains `acknowledgedAt`. The envelope remains in the audit trail.
+
+## Identity and discovery
 
 Each repository declares:
 
-- `repo`: stable agent and repository id
+- `repo`: stable repository and rep id
 - `is`: one-sentence purpose
 - `provides`: capabilities backed by real file paths
 - `kin`: repositories it can ask for related work, with a reason for each edge
@@ -20,68 +45,62 @@ Each repository declares:
 
 The verifier rejects capability claims whose evidence paths do not exist.
 
-### 2. Context
-
-An agent host boots an agent with:
+An agent host assembles verified context with:
 
 ```sh
-repos context --root /path/to/workspace --repo research-agent
+repos context --root /path/to/workspace --repo research-service
 ```
 
-The result contains the repository manifest, resolved kin capabilities, and open inbox. The host then adds the repository's own instructions and code context.
+The result contains the repository manifest, resolved kin capabilities, and open inbox. The host then adds the repository's own instructions and code context. Message bodies and neighboring repository content remain untrusted input.
 
-The context output is data, not a prompt injection boundary. Hosts must still treat message bodies and neighboring repository content as untrusted input.
+## Presence and proactive operation
 
-### 3. Transport
-
-Agents exchange immutable request bodies through the workspace mailbox:
+Keep a Repo Rep awake:
 
 ```sh
-repos send --root /path/to/workspace \
-  --from research-agent \
-  --to metrics-service \
-  --kind request \
-  --subject "Map population risk to personal metrics" \
-  --body-file request.md
+repos-agent watch --root /path/to/workspace --repo metrics-service
 ```
 
-Message kinds are `request`, `response`, and `notice`. A response can include `--reply-to MESSAGE_ID`. Acknowledgement adds a timestamp but does not delete the message.
+The watcher is local and opt-in. It polls the durable inbox, handles one request at a time, refreshes a lease, and survives periods with no work. `--once` checks once and exits, which is useful for CI and scheduled jobs.
 
-Version 1 is local-first. Messages are JSON files under the workspace root. There is no account, server, network call, or model-provider dependency.
-
-### 4. Host
-
-The host is the process that actually runs an AI model. A host adapter should:
-
-1. choose one repository
-2. load `repos context`
-3. read that repository's local instructions
-4. select one open request
-5. perform work only within the granted scope
-6. validate the result
-7. send a response with evidence paths and test results
-8. acknowledge the original message
-
-Codex, Claude, a CI job, or a local scheduler can all implement this lifecycle. The protocol must not require a particular host.
+Presence records live under `.repo-connect/presence/`. They are operational artifacts, not capability claims. A record is proactive only while its lease is fresh and its watcher PID is live.
 
 ## Message contract
 
 ```json
 {
-  "version": 1,
+  "version": 2,
+  "protocol": "repos.chat/1",
   "id": "20260827T120000000Z-a1b2c3d4",
-  "from": "research-agent",
+  "conversationId": "20260827T120000000Z-a1b2c3d4",
+  "from": "research-service",
   "to": "metrics-service",
   "kind": "request",
   "subject": "Map population risk to personal metrics",
   "body": "Return a sourced metric proposal.",
-  "createdAt": "2026-08-27T12:00:00.000Z",
-  "replyTo": null,
-  "acknowledgedAt": null
+  "createdAt": "2026-08-27T12:00:00.000Z"
 }
 ```
 
-Only `replyTo` and `acknowledgedAt` are optional. Message bodies should state the requested outcome, constraints, evidence expected, and definition of done.
+Message kinds are `request`, `response`, and `notice`. A response uses `replyTo` and inherits the original `conversationId`. Acknowledgement adds a timestamp but does not delete the message.
+
+Version 2 remains local-first. Messages are JSON files under the workspace root. There is no account, server, network call, or model-provider dependency.
+
+## Host contract
+
+A host adapter must:
+
+1. choose one repository
+2. load `repos context`
+3. read that repository's local instructions
+4. select one open request
+5. claim the repository and request
+6. perform work only within the granted scope
+7. validate the result
+8. send a response with evidence paths and test results
+9. acknowledge the original message
+
+Codex, Claude, a CI job, or a local scheduler can implement this lifecycle. The protocol does not require a particular host.
 
 ## Trust and safety
 
@@ -91,45 +110,38 @@ Only `replyTo` and `acknowledgedAt` are optional. Message bodies should state th
 - The receiver must not edit the sender's repository unless the host explicitly grants that scope.
 - Responses should cite concrete file paths, commits, test output, or source URLs.
 - Acknowledgement means the message was handled, not that its claims are true.
+- The inspector binds only to `127.0.0.1`. It is not a public dashboard.
 - Remote transport, if added, must authenticate repositories and preserve an audit log.
 
-## Recommended agent roles
+## Scope of one Repo Rep
 
-Every repository starts with one general owner agent. Add specialist agents only after one owner becomes a measured bottleneck. Premature role fleets multiply coordination cost and unclear authority.
-
-The owner agent is responsible for:
+Every repository starts with one general Repo Rep. Add specialist agents only after one rep becomes a measured bottleneck. The rep is responsible for:
 
 - understanding the repository outcome
 - maintaining verified capabilities
 - accepting or rejecting incoming requests
-- doing bounded work or asking a kin repository for help
+- doing bounded work or asking a connected repository for help
 - returning evidence, not just prose
 - keeping the repository's continuity files current
 
-## Roadmap
+## Implemented
 
-### Implemented
-
-- verified repository manifests
-- kin graph
+- verified repository manifests and kin graph
 - shared-canon drift checks
-- durable local inboxes
-- acknowledgements and reply threading fields
-- machine-readable agent boot context
+- durable local inboxes and conversation ids
+- acknowledgements and reply threading
+- machine-readable rep boot context
 - bounded Codex host adapter with repository and message locks
+- proactive watcher with verifiable local presence
 - structured completion responses with evidence, tests, and risks
+- localhost graph, presence, and conversation inspector
 
-### Next
+## Later, only if local use proves it
 
-- an opt-in scheduler that wakes repository agents without creating duplicate work
 - a Claude host adapter using the same completion contract
 - inbox priorities, deadlines, and cancellation events
-- an optional dashboard for the repository graph and message state
-
-### Later, only if local use proves it
-
 - signed remote relay for repositories that do not share a filesystem
 - policy capabilities describing which repositories may request which operations
-- cost, latency, and outcome telemetry by repository agent
+- cost, latency, and outcome telemetry by Repo Rep
 
 The protocol should stay useful with one repository and one human. Network effects are an upside, not a prerequisite.

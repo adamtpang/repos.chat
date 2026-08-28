@@ -1,22 +1,27 @@
 {
   "name": "repos.chat",
-  "version": "0.3.0",
-  "description": "Verified relationships and durable local mail for repository-native AI agents.",
+  "version": "0.4.0",
+  "description": "Every repo gets a rep: verified identity, proactive presence, and durable local conversations.",
   "type": "module",
   "bin": {
     "repos": "./repos.mjs",
-    "repos-agent": "./agent-host.mjs"
+    "repos-agent": "./agent-host.mjs",
+    "repos-dashboard": "./dashboard.mjs"
   },
   "files": [
     "repos.mjs",
     "agent-host.mjs",
+    "dashboard.mjs",
     "AGENT_PROTOCOL.md",
+    "PROTOCOL_RESEARCH.md",
     "README.md",
     "skills"
   ],
   "scripts": {
     "test": "node --test",
-    "agent": "node agent-host.mjs run"
+    "agent": "node agent-host.mjs run",
+    "watch": "node agent-host.mjs watch",
+    "dashboard": "node dashboard.mjs"
   },
   "engines": {
     "node": ">=18"

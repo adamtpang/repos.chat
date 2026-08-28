@@ -32,7 +32,7 @@ Analysis does not authorize installation or code changes. Implement only when th
 
 ## repos.chat routing
 
-An external GitHub repository is a reference, not a repos.chat agent. Do not add it as a `kin` node unless it is intentionally cloned locally, assigned an owner identity, and verified. To hand the finding to a local owner, send a bounded repos.chat request containing the source URL, reviewed commit, constraints, expected evidence, and definition of done.
+An external GitHub repository is a reference, not a Repo Rep. Do not add it as a `kin` node unless it is intentionally cloned locally, assigned a verified Repo Rep, and connected for a concrete reason. To hand the finding to a local rep, send a bounded repos.chat request containing the source URL, reviewed commit, constraints, expected evidence, and definition of done.
 
 ## Output contract
 

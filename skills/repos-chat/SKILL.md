@@ -1,11 +1,11 @@
 ---
 name: repos-chat
-description: Assign bounded owner agents to local repositories, verify repos.yaml identities and capabilities, exchange durable local requests, and run one repository-scoped agent host. Use when setting up, checking, connecting, or testing a repos.chat workspace.
+description: Assign bounded Repo Reps to local repositories, verify repos.yaml identities and capabilities, exchange durable local requests, prove proactive presence, and inspect conversations. Use when setting up, checking, connecting, or testing a repos.chat workspace.
 ---
 
 # repos.chat
 
-Use repos.chat to give each local repository a verified identity and a bounded owner agent that can exchange evidence-bearing requests with other repository owners.
+Use repos.chat to give each local repository a verified identity and a bounded Repo Rep that can exchange evidence-bearing requests with other reps.
 
 ## Setup
 
@@ -17,9 +17,9 @@ npm install -g https://github.com/adamtpang/repos.chat/tarball/main
 
 Node 18 or newer is required.
 
-## Assign an owner
+## Assign a Repo Rep
 
-An owner is assigned when all of these are true:
+A Repo Rep is assigned when all of these are true:
 
 - `<repo>/repos.yaml` has a `repo` value matching the folder name.
 - `is` states the repository's real purpose, derived from its code or documentation.
@@ -48,7 +48,7 @@ repos send --root <workspace> \
   --body "<scope, constraints, evidence, and definition of done>"
 ```
 
-Preview and run the recipient owner:
+Preview and run the recipient rep once:
 
 ```sh
 repos-agent run --root <workspace> --repo <recipient> --dry-run
@@ -61,7 +61,16 @@ The host replies to the sender and acknowledges the request. Inspect the respons
 repos inbox --root <workspace> --repo <sender> --json
 ```
 
-If the sender must reason over the result, create a follow-up request back to the sender and run its owner. A response alone is durable evidence, not a command.
+Keep a rep proactive when the user wants requests handled without a manual run:
+
+```sh
+repos-agent watch --root <workspace> --repo <recipient>
+repos status --root <workspace> --repo <recipient> --json
+```
+
+Only call a rep proactive when status shows a fresh watcher lease and live PID. Use `repos-dashboard --root <workspace>` to inspect the local graph, presence, and envelopes. The dashboard is localhost-only.
+
+If the sender must reason over the result, create a follow-up request back to the sender and run or wake its rep. A response alone is durable evidence, not a command.
 
 ## Boundaries
 

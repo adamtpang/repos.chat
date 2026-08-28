@@ -1,6 +1,6 @@
-# repos.yaml v0.3 - see repos.chat
+# repos.yaml v0.4 - see repos.chat
 repo: repos.chat
-is: Verified repository relationships and durable local messages for repository-native AI agents.
+is: Repository Representation Protocol for verified, proactive Repo Reps and durable local conversations.
 url: https://repos.chat
 cluster: agent-infrastructure
 
@@ -15,13 +15,19 @@ provides:
     what: sends, reads, and acknowledges durable local messages between repository agents
     at: repos.mjs
   - id: agent-protocol
-    what: defines the provider-neutral lifecycle and safety boundary for one AI agent per repository
+    what: defines Repo Rep identity, presence, messages, execution, evidence, and safety boundaries
     at: AGENT_PROTOCOL.md
   - id: codex-agent-host
-    what: runs one locked inbox request inside the recipient repository and returns an evidence-bearing response
+    what: runs or proactively watches locked inbox requests inside the recipient repository
     at: agent-host.mjs
+  - id: local-protocol-inspector
+    what: visualizes the repository graph, live presence, and protocol envelopes on localhost
+    at: dashboard.mjs
+  - id: protocol-prior-art
+    what: compares repos.chat with A2A, MCP, FIPA ACL, ACP, ANP, AGNTCY, and multi-agent frameworks
+    at: PROTOCOL_RESEARCH.md
   - id: repository-owner-skill
-    what: installable skill for assigning, verifying, and coordinating bounded repository owner agents
+    what: installable skill for assigning, verifying, and coordinating bounded Repo Reps
     at: skills/repos-chat/SKILL.md
   - id: github-star-match-skill
     what: installable skill for evaluating external GitHub mechanisms against real local code before adoption

@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// repos.mjs — verify and sync the repos.yaml protocol.
+// repos.mjs: verify and sync the repos.yaml protocol.
 // No dependencies. Node 18+.
 //
 //   node repos.mjs verify [--root DIR]   check every manifest's claims against real code
 //   node repos.mjs sync   [--root DIR]   detect drift in shared canon files across kin
 //   node repos.mjs graph  [--root DIR]   emit the repo graph as JSON
-//   node repos.mjs status [options]      show whether one repo has an owner identity
+//   node repos.mjs status [options]      show one repo rep's assignment and presence
 //   node repos.mjs send   [options]      send a durable local message between repos
 //   node repos.mjs inbox  [options]      read one repo's open messages
 //   node repos.mjs ack    [options]      acknowledge a message without deleting it
@@ -108,8 +108,8 @@ function findManifests(root, depth = 1) {
   const hubPath = path.join(root, 'repos.yaml');
   if (fs.existsSync(hubPath)) {
     const name = path.basename(path.resolve(root));
-    try { found.push({ dir: root, name, m: parseManifest(fs.readFileSync(hubPath, 'utf8')) }); }
-    catch (err) { found.push({ dir: root, name, err: err.message }); }
+    try { found.push({ dir: root, name, isRoot: true, m: parseManifest(fs.readFileSync(hubPath, 'utf8')) }); }
+    catch (err) { found.push({ dir: root, name, isRoot: true, err: err.message }); }
   }
   walk(root, depth, found);
   return found;
@@ -129,7 +129,7 @@ function verify(repos) {
     const m = r.m;
 
     for (const f of ['repo', 'is', 'kin']) if (!m[f]) problems.push(`missing required field: ${f}`);
-    if (m.repo && m.repo !== r.name) problems.push(`repo field "${m.repo}" != folder "${r.name}"`);
+    if (m.repo && m.repo !== r.name && !r.isRoot) problems.push(`repo field "${m.repo}" != folder "${r.name}"`);
 
     for (const p of (m.provides || [])) {
       const id = typeof p === 'object' ? (p.id || Object.keys(p)[0]) : String(p).split(':')[0];
@@ -198,16 +198,27 @@ function sync(repos) {
 
 /* ---------- graph -------------------------------------------------------- */
 function graph(repos) {
-  const nodes = repos.map(r => ({
-    id: r.name, is: r.m?.is, cluster: r.m?.cluster, ranks: r.m?.ranks,
-    stack: r.m?.stack || [],
-    provides: (r.m?.provides || []).map(p => typeof p === 'object' ? (p.id || Object.keys(p)[0]) : String(p).split(':')[0]),
-  }));
+  const nodes = repos.map(r => {
+    const id = repoId(r);
+    const manifestValid = (r.m?.repo === r.name || r.isRoot === true)
+      && typeof r.m?.is === 'string' && r.m.is.length > 0
+      && Array.isArray(r.m?.kin);
+    const instructions = fs.existsSync(path.join(r.dir, 'AGENTS.md'))
+      || fs.existsSync(path.join(r.dir, 'CLAUDE.md'));
+    return {
+      id, is: r.m?.is, cluster: r.m?.cluster, ranks: r.m?.ranks,
+      stack: r.m?.stack || [],
+      provides: (r.m?.provides || []).map(p => typeof p === 'object' ? (p.id || Object.keys(p)[0]) : String(p).split(':')[0]),
+      assigned: manifestValid && instructions,
+      openMessages: readInbox(id).length,
+      presence: readPresence(id),
+    };
+  });
   const edges = [];
   for (const r of repos)
     for (const k of (r.m?.kin || [])) {
       const to = typeof k === 'object' ? k.repo : String(k);
-      edges.push({ from: r.name, to, why: typeof k === 'object' ? k.why : null });
+      edges.push({ from: repoId(r), to, why: typeof k === 'object' ? k.why : null });
     }
   console.log(JSON.stringify({ nodes, edges }, null, 2));
   return 0;
@@ -218,6 +229,7 @@ function graph(repos) {
 // workspace root so Codex, Claude, CI, or another host can all consume the same
 // durable inbox without a server or provider-specific API.
 const MAIL_ROOT = path.join(ROOT, '.repo-connect', 'mail');
+const PRESENCE_ROOT = path.join(ROOT, '.repo-connect', 'presence');
 const MESSAGE_KINDS = new Set(['request', 'response', 'notice']);
 
 function repoId(r) {
@@ -234,6 +246,10 @@ function safeRepoId(id) {
 
 function safeMessageId(id) {
   return typeof id === 'string' && /^[A-Za-z0-9_-]+$/.test(id);
+}
+
+function safeConversationId(id) {
+  return typeof id === 'string' && /^[A-Za-z0-9._-]+$/.test(id);
 }
 
 function messagePath(to, id) {
@@ -256,6 +272,17 @@ function readInbox(repo, includeAcknowledged = false) {
   return messages.sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
 }
 
+function findMessageById(id) {
+  let repos = [];
+  try { repos = fs.readdirSync(MAIL_ROOT, { withFileTypes: true }); } catch { return null; }
+  for (const entry of repos) {
+    if (!entry.isDirectory()) continue;
+    const candidate = path.join(MAIL_ROOT, entry.name, `${id}.json`);
+    try { return JSON.parse(fs.readFileSync(candidate, 'utf8')); } catch {}
+  }
+  return null;
+}
+
 function send(repos) {
   const from = option('from');
   const to = option('to');
@@ -264,6 +291,7 @@ function send(repos) {
   let body = option('body');
   const kind = option('kind') || 'request';
   const replyTo = option('reply-to');
+  const requestedConversationId = option('conversation-id');
 
   if (!safeRepoId(from) || !safeRepoId(to)) {
     console.error('send requires safe --from and --to repo ids');
@@ -281,6 +309,14 @@ function send(repos) {
     console.error(`send --kind must be one of: ${[...MESSAGE_KINDS].join(', ')}`);
     return 1;
   }
+  if (replyTo && !safeMessageId(replyTo)) {
+    console.error('send --reply-to contains unsupported characters');
+    return 1;
+  }
+  if (requestedConversationId && !safeConversationId(requestedConversationId)) {
+    console.error('send --conversation-id contains unsupported characters');
+    return 1;
+  }
   if (bodyFile) {
     try { body = fs.readFileSync(path.resolve(bodyFile), 'utf8'); }
     catch (err) { console.error(`could not read --body-file: ${err.message}`); return 1; }
@@ -293,9 +329,13 @@ function send(repos) {
   const createdAt = new Date().toISOString();
   const stamp = createdAt.replace(/[-:.]/g, '');
   const id = `${stamp}-${crypto.randomBytes(4).toString('hex')}`;
+  const parent = replyTo ? findMessageById(replyTo) : null;
+  const conversationId = requestedConversationId || parent?.conversationId || id;
   const message = {
-    version: 1,
+    version: 2,
+    protocol: 'repos.chat/1',
     id,
+    conversationId,
     from,
     to,
     kind,
@@ -394,7 +434,7 @@ function status(repos) {
 
   const manifest = {
     present: true,
-    identityMatchesFolder: current.m?.repo === current.name,
+    identityMatchesFolder: current.m?.repo === current.name || current.isRoot === true,
     purposeDeclared: typeof current.m?.is === 'string' && current.m.is.length > 0,
     kinDeclared: Array.isArray(current.m?.kin),
   };
@@ -405,8 +445,10 @@ function status(repos) {
     claude: fs.existsSync(path.join(current.dir, 'CLAUDE.md')),
   };
   const assigned = manifest.valid && (instructions.agents || instructions.claude);
+  const presence = readPresence(repoId(current));
   const result = {
     repo: repoId(current),
+    role: 'repo-rep',
     path: current.dir,
     assigned,
     manifest,
@@ -414,7 +456,10 @@ function status(repos) {
     capabilities: (current.m?.provides || []).length,
     connections: (current.m?.kin || []).length,
     openMessages: readInbox(repoId(current)).length,
-    runtime: 'not inspected; a host process starts the agent when work is requested',
+    presence,
+    runtime: presence.proactive
+      ? `watcher lease active; rep is ${presence.state}`
+      : 'no live watcher lease; run or watch the rep when work is requested',
   };
 
   if (hasFlag('json')) {
@@ -422,7 +467,7 @@ function status(repos) {
     return assigned ? 0 : 1;
   }
 
-  console.log(`${assigned ? `${C.g}✓${C.x}` : `${C.r}✗${C.x}`} ${result.repo}: owner agent ${assigned ? 'assigned' : 'not ready'}`);
+  console.log(`${assigned ? `${C.g}✓${C.x}` : `${C.r}✗${C.x}`} ${result.repo}: repo rep ${assigned ? 'assigned' : 'not ready'}`);
   console.log(`  manifest: ${manifest.valid ? 'valid' : 'incomplete or mismatched'}`);
   console.log(`  instructions: ${[
     instructions.agents ? 'AGENTS.md' : null,
@@ -431,8 +476,64 @@ function status(repos) {
   console.log(`  capabilities: ${result.capabilities}`);
   console.log(`  connections: ${result.connections}`);
   console.log(`  open messages: ${result.openMessages}`);
+  console.log(`  presence: ${presence.state}${presence.proactive ? ' (proactive)' : ''}`);
   console.log(`  runtime: ${result.runtime}`);
   return assigned ? 0 : 1;
+}
+
+function processAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+function readPresence(repo) {
+  const presencePath = path.join(PRESENCE_ROOT, `${repo}.json`);
+  let raw;
+  try { raw = JSON.parse(fs.readFileSync(presencePath, 'utf8')); }
+  catch {
+    return { state: 'offline', proactive: false, proof: 'no watcher lease' };
+  }
+
+  const heartbeat = Date.parse(raw.heartbeatAt || '');
+  const leaseMs = Number(raw.leaseMs || 15000);
+  const fresh = Number.isFinite(heartbeat) && Date.now() - heartbeat <= leaseMs;
+  const watcherLive = processAlive(Number(raw.watcherPid || raw.pid));
+  const workerLive = raw.state === 'working' && processAlive(Number(raw.pid));
+  const proactive = raw.proactive === true && watcherLive && (fresh || workerLive);
+  if (!proactive && raw.state !== 'working') {
+    return {
+      state: 'offline',
+      proactive: false,
+      lastState: raw.state,
+      lastSeenAt: raw.heartbeatAt || null,
+      lastOutcome: raw.lastOutcome || null,
+      proof: fresh ? 'watcher process is not live' : 'watcher lease expired',
+    };
+  }
+
+  if (raw.state === 'working' && !workerLive) {
+    return {
+      state: proactive ? 'blocked' : 'offline',
+      proactive,
+      lastSeenAt: raw.heartbeatAt || null,
+      messageId: raw.messageId || null,
+      proof: 'worker process is not live',
+    };
+  }
+
+  return {
+    state: raw.state || 'idle',
+    proactive,
+    pid: Number(raw.pid) || null,
+    watcherPid: Number(raw.watcherPid) || null,
+    since: raw.since || null,
+    lastSeenAt: raw.heartbeatAt || null,
+    messageId: raw.messageId || null,
+    lastOutcome: raw.lastOutcome || null,
+    proof: proactive
+      ? (fresh ? 'live local PID and fresh watcher lease' : 'live watcher and worker PIDs during active request')
+      : 'live one-shot worker',
+  };
 }
 
 function help() {
@@ -441,14 +542,14 @@ function help() {
   repos status  --root DIR --repo REPO [--json]
   repos graph   --root DIR [--depth N]
   repos sync    --root DIR
-  repos send    --root DIR --from REPO --to REPO --subject TEXT --body TEXT
+  repos send    --root DIR --from REPO --to REPO --subject TEXT --body TEXT [--reply-to ID]
   repos inbox   --root DIR --repo REPO [--json] [--all]
   repos ack     --root DIR --repo REPO --id MESSAGE_ID
   repos context --root DIR --repo REPO
 
-An assigned owner has a valid repos.yaml identity and at least one local
-instruction file. Assignment does not mean a model process is always running.
-Use repos-agent run --root DIR --repo REPO to handle one open request.`);
+An assigned Repo Rep has a valid repos.yaml identity and at least one local
+instruction file. A live watcher lease makes it proactive and observable.
+Use repos-agent watch --root DIR --repo REPO to keep it awake, or run to handle once.`);
   return 0;
 }
 
@@ -461,7 +562,7 @@ if (!repos.length) {
   console.log(`no repos.yaml found under ${ROOT}`);
   process.exit(0);
 }
-if (!['send', 'inbox', 'ack', 'context', 'status'].includes(cmd)) {
+if (!['send', 'inbox', 'ack', 'context', 'status', 'graph'].includes(cmd)) {
   console.log(`${C.d}${repos.length} manifests under ${ROOT}${C.x}\n`);
 }
 const code = cmd === 'sync' ? sync(repos)

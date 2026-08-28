@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Runs one bounded repository agent against one open repos.chat request.
+// Runs or watches one bounded Repo Rep against repos.chat requests.
 // The mailbox is provider-neutral; this first host adapter uses `codex exec`.
 
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -10,6 +10,7 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+const currentFile = fileURLToPath(import.meta.url);
 const protocol = path.join(here, 'repos.mjs');
 const args = process.argv.slice(2);
 const command = args[0] || 'run';
@@ -27,6 +28,9 @@ const host = option('host') || 'codex';
 const model = option('model');
 const timeoutMinutes = Number(option('timeout-minutes') || 30);
 const lockTtlMinutes = Number(option('lock-ttl-minutes') || 120);
+const intervalSeconds = Number(option('interval-seconds') || 2);
+const stateRoot = path.join(root, '.repo-connect');
+const presencePath = repo ? path.join(stateRoot, 'presence', `${repo}.json`) : null;
 
 function fail(message) {
   console.error(message);
@@ -45,6 +49,40 @@ function safeId(value) {
   return typeof value === 'string' && /^[A-Za-z0-9._-]+$/.test(value);
 }
 
+function atomicJson(file, value) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const temp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+  fs.renameSync(temp, file);
+}
+
+function writePresence(state, extra = {}) {
+  if (!presencePath) return;
+  const watcherPid = Number(process.env.REPOS_CHAT_WATCHER_PID || extra.watcherPid || 0) || null;
+  const proactive = Boolean(watcherPid || extra.proactive);
+  const now = new Date().toISOString();
+  let existing = {};
+  try { existing = JSON.parse(fs.readFileSync(presencePath, 'utf8')); } catch {}
+  atomicJson(presencePath, {
+    protocol: 'repos.chat/presence/1',
+    repo,
+    role: 'repo-rep',
+    state,
+    proactive,
+    pid: Number(extra.pid || process.pid),
+    watcherPid,
+    since: existing.state === state ? existing.since || now : now,
+    heartbeatAt: now,
+    leaseMs: Math.max(15000, intervalSeconds * 4000),
+    lastOutcome: extra.lastOutcome ?? existing.lastOutcome ?? null,
+    ...extra,
+  });
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 function acquireLock(lockPath, payload, ttlMinutes) {
   fs.mkdirSync(path.dirname(lockPath), { recursive: true });
   try {
@@ -59,8 +97,12 @@ function acquireLock(lockPath, payload, ttlMinutes) {
   let stale = false;
   try {
     const existing = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
-    const age = Date.now() - new Date(existing.claimedAt).getTime();
-    stale = Number.isFinite(age) && age > ttlMinutes * 60 * 1000;
+    const age = Date.now() - new Date(existing.heartbeatAt || existing.claimedAt).getTime();
+    let live = false;
+    if (Number.isInteger(existing.pid) && existing.pid > 0) {
+      try { process.kill(existing.pid, 0); live = true; } catch {}
+    }
+    stale = !live && Number.isFinite(age) && age > ttlMinutes * 60 * 1000;
   } catch {
     stale = true;
   }
@@ -74,7 +116,7 @@ function buildPrompt(context, message) {
   const kin = context.kin
     .map(item => `${item.repo}: ${item.is || 'manifest unavailable'}`)
     .join('\n');
-  return `You are the owner agent for repository ${context.repo.id}.
+  return `You are the Repo Rep for repository ${context.repo.id}.
 
 Repository path: ${context.repo.path}
 Repository purpose: ${context.repo.manifest.is}
@@ -165,18 +207,126 @@ function sendResponse(message, result) {
       '--subject', `Re: ${message.subject}`,
       '--body-file', bodyPath,
       '--reply-to', message.id,
+      '--conversation-id', message.conversationId || message.id,
     );
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 }
 
-if (command !== 'run') fail('usage: repos-agent run --root DIR --repo REPO [--dry-run]');
-if (!safeId(repo)) fail('run requires a safe --repo id');
+async function watch() {
+  const watcherLock = path.join(stateRoot, 'watchers', `${repo}.json`);
+  const watcher = {
+    repo,
+    role: 'repo-rep',
+    pid: process.pid,
+    claimedAt: new Date().toISOString(),
+  };
+  if (!acquireLock(watcherLock, watcher, lockTtlMinutes)) {
+    fail(`repository rep watcher is already running: ${repo}`);
+  }
+
+  let stopping = false;
+  const failedRequests = new Set();
+  let lastBlocked = null;
+  const stop = () => { stopping = true; };
+  process.on('SIGINT', stop);
+  process.on('SIGTERM', stop);
+
+  try {
+    do {
+      const context = protocolJson('context', '--repo', repo);
+      const request = context.inbox.find(message =>
+        message.kind === 'request' && !failedRequests.has(message.id));
+      if (!request) {
+        if (lastBlocked) {
+          writePresence('blocked', {
+            proactive: true,
+            watcherPid: process.pid,
+            pid: process.pid,
+            messageId: lastBlocked.messageId,
+            lastOutcome: lastBlocked.outcome,
+          });
+        } else {
+          writePresence('idle', { proactive: true, watcherPid: process.pid, pid: process.pid });
+        }
+      } else {
+        writePresence('working', {
+          proactive: true,
+          watcherPid: process.pid,
+          pid: process.pid,
+          messageId: request.id,
+        });
+        const childArgs = [
+          currentFile,
+          'run',
+          '--root', root,
+          '--repo', repo,
+          '--id', request.id,
+          '--host', host,
+          '--timeout-minutes', String(timeoutMinutes),
+          '--lock-ttl-minutes', String(lockTtlMinutes),
+          '--interval-seconds', String(intervalSeconds),
+        ];
+        if (model) childArgs.push('--model', model);
+        const run = spawnSync(process.execPath, childArgs, {
+          encoding: 'utf8',
+          maxBuffer: 50 * 1024 * 1024,
+          env: { ...process.env, REPOS_CHAT_WATCHER_PID: String(process.pid) },
+        });
+        let outcome = null;
+        try { outcome = JSON.parse(run.stdout).result?.outcome || null; } catch {}
+        if (run.status !== 0 || ['blocked', 'declined'].includes(outcome)) {
+          if (run.status !== 0) failedRequests.add(request.id);
+          lastBlocked = { messageId: request.id, outcome: outcome || 'host-error' };
+          writePresence('blocked', {
+            proactive: true,
+            watcherPid: process.pid,
+            pid: process.pid,
+            messageId: request.id,
+            lastOutcome: outcome || 'host-error',
+          });
+        } else {
+          lastBlocked = null;
+          writePresence('idle', {
+            proactive: true,
+            watcherPid: process.pid,
+            pid: process.pid,
+            lastOutcome: outcome || 'completed',
+          });
+        }
+      }
+
+      atomicJson(watcherLock, { ...watcher, heartbeatAt: new Date().toISOString() });
+      if (hasFlag('once')) break;
+      await sleep(intervalSeconds * 1000);
+    } while (!stopping);
+  } finally {
+    try { fs.unlinkSync(watcherLock); } catch {}
+    writePresence('offline', {
+      proactive: false,
+      watcherPid: null,
+      pid: process.pid,
+    });
+  }
+
+  console.log(JSON.stringify({ ok: true, repo, state: 'offline', watched: true }, null, 2));
+}
+
+if (!['run', 'watch'].includes(command)) {
+  fail('usage: repos-agent <run|watch> --root DIR --repo REPO [--dry-run|--once]');
+}
+if (!safeId(repo)) fail(`${command} requires a safe --repo id`);
 if (requestedId && !safeId(requestedId)) fail('--id contains unsupported characters');
 if (host !== 'codex') fail('this adapter currently supports --host codex');
 if (!Number.isFinite(timeoutMinutes) || timeoutMinutes <= 0) fail('--timeout-minutes must be positive');
 if (!Number.isFinite(lockTtlMinutes) || lockTtlMinutes <= 0) fail('--lock-ttl-minutes must be positive');
+if (!Number.isFinite(intervalSeconds) || intervalSeconds <= 0) fail('--interval-seconds must be positive');
+
+if (command === 'watch') {
+  await watch();
+  process.exit(0);
+}
 
 const context = protocolJson('context', '--repo', repo);
 const requests = context.inbox.filter(message => message.kind === 'request');
@@ -201,7 +351,6 @@ if (hasFlag('dry-run')) {
   process.exit(0);
 }
 
-const stateRoot = path.join(root, '.repo-connect');
 const lockPath = path.join(stateRoot, 'locks', `${repo}.json`);
 const claimPath = path.join(stateRoot, 'claims', `${message.id}.json`);
 const claim = {
@@ -219,6 +368,13 @@ if (!acquireLock(claimPath, claim, lockTtlMinutes)) {
   try { fs.unlinkSync(lockPath); } catch {}
   fail(`message is already claimed: ${message.id}`);
 }
+
+writePresence('working', {
+  proactive: Boolean(process.env.REPOS_CHAT_WATCHER_PID),
+  watcherPid: Number(process.env.REPOS_CHAT_WATCHER_PID || 0) || null,
+  pid: process.pid,
+  messageId: message.id,
+});
 
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'repos-chat-agent-'));
 const schemaPath = path.join(tempDir, 'result.schema.json');
@@ -264,8 +420,21 @@ try {
   }, null, 2)}\n`, 'utf8');
   protocolJson('ack', '--repo', repo, '--id', message.id);
   const finishedAt = new Date().toISOString();
-  fs.writeFileSync(claimPath, `${JSON.stringify({ ...claim, completedAt: finishedAt, outcome: result.outcome }, null, 2)}\n`, 'utf8');
+  fs.writeFileSync(claimPath, `${JSON.stringify({
+    ...claim,
+    respondedAt: finishedAt,
+    responseId: response.message.id,
+    completedAt: finishedAt,
+    outcome: result.outcome,
+  }, null, 2)}\n`, 'utf8');
   completed = true;
+  writePresence(result.outcome === 'completed' ? 'idle' : 'blocked', {
+    proactive: Boolean(process.env.REPOS_CHAT_WATCHER_PID),
+    watcherPid: Number(process.env.REPOS_CHAT_WATCHER_PID || 0) || null,
+    pid: Number(process.env.REPOS_CHAT_WATCHER_PID || process.pid),
+    lastOutcome: result.outcome,
+    ...(result.outcome === 'completed' ? {} : { messageId: message.id }),
+  });
   console.log(JSON.stringify({
     ok: true,
     state: 'completed',
@@ -282,6 +451,15 @@ try {
   try { fs.unlinkSync(lockPath); } catch {}
   if (!completed && !responseSent) {
     try { fs.unlinkSync(claimPath); } catch {}
+  }
+  if (failure) {
+    writePresence('blocked', {
+      proactive: Boolean(process.env.REPOS_CHAT_WATCHER_PID),
+      watcherPid: Number(process.env.REPOS_CHAT_WATCHER_PID || 0) || null,
+      pid: Number(process.env.REPOS_CHAT_WATCHER_PID || process.pid),
+      messageId: message.id,
+      lastOutcome: 'host-error',
+    });
   }
 }
 

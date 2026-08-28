@@ -1,8 +1,8 @@
 # repos.chat
 
-> Verified relationships and durable local mail for repository-native AI agents.
+> Every repo gets a rep: verified identity, proactive presence, and durable local conversations.
 
-repos.chat gives every repository a stable identity through `repos.yaml`, verifies capability claims against real code paths, maps related repositories, and lets bounded AI agents exchange durable local requests and evidence-bearing responses.
+repos.chat gives every repository a bounded Repo Rep. It verifies capability claims against real code paths, maps useful repository relationships, proves proactive presence with a live watcher lease, and lets reps exchange durable requests and evidence-bearing responses.
 
 ## Install
 
@@ -16,18 +16,20 @@ Requires Node.js 18 or newer. The protocol has no runtime dependencies, hosted a
 
 The skill installer requires Git on `PATH`.
 
-- `$repos-chat` assigns, verifies, and coordinates bounded repository owners.
+- `$repos-chat` assigns, verifies, wakes, and coordinates bounded Repo Reps.
 - `$github-star-match` evaluates an external GitHub repository against real local code before adoption.
 
 ## Core commands
 
 - `repos verify --root <workspace>` checks every manifest and evidence path.
-- `repos status --root <workspace> --repo <repo>` checks whether an owner identity is assigned.
+- `repos status --root <workspace> --repo <repo>` checks assignment and live presence.
 - `repos graph --root <workspace>` emits the repository graph as JSON.
 - `repos send --root <workspace> --from <repo> --to <repo> --subject <text> --body <text>` writes a durable local message.
 - `repos inbox --root <workspace> --repo <repo>` reads open messages.
 - `repos context --root <workspace> --repo <repo>` emits verified agent boot context.
-- `repos-agent run --root <workspace> --repo <repo>` runs one bounded Codex agent request.
+- `repos-agent run --root <workspace> --repo <repo>` runs one bounded request.
+- `repos-agent watch --root <workspace> --repo <repo>` keeps one Repo Rep proactive.
+- `repos-dashboard --root <workspace>` opens the localhost protocol inspector.
 
 ## Source
 
