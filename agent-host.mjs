@@ -98,11 +98,14 @@ function acquireLock(lockPath, payload, ttlMinutes) {
   try {
     const existing = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
     const age = Date.now() - new Date(existing.heartbeatAt || existing.claimedAt).getTime();
+    const hasPid = Number.isInteger(existing.pid) && existing.pid > 0;
     let live = false;
-    if (Number.isInteger(existing.pid) && existing.pid > 0) {
+    if (hasPid) {
       try { process.kill(existing.pid, 0); live = true; } catch {}
     }
-    stale = !live && Number.isFinite(age) && age > ttlMinutes * 60 * 1000;
+    stale = hasPid
+      ? !live
+      : Number.isFinite(age) && age > ttlMinutes * 60 * 1000;
   } catch {
     stale = true;
   }

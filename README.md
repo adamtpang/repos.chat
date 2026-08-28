@@ -124,7 +124,7 @@ Start the read-only local inspector:
 repos-dashboard --root ~/projects
 ```
 
-Open `http://127.0.0.1:4777`. It shows Repo Rep states, declared repository edges, conversation threads, acknowledgement status, and raw envelopes. It binds only to loopback and is separate from the public landing page.
+Open `http://127.0.0.1:4777`. It shows Repo Rep states, declared repository edges, conversation threads, acknowledgement status, and raw envelopes. Add `?focus=repo-a,repo-b` to isolate a private subgraph and only the conversations within it. The inspector binds only to loopback and is separate from the public landing page.
 
 It explicitly forbids external communication, deployment, purchases, commits, pushes, and edits to other repositories. See [AGENT_PROTOCOL.md](AGENT_PROTOCOL.md) for the host lifecycle and safety boundary.
 

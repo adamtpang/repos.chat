@@ -29,7 +29,7 @@ manifest card -> watcher lease -> durable envelope -> exclusive lock -> evidence
 1. **Manifest card:** `repos.yaml` declares identity, purpose, capabilities backed by real paths, and useful repository relationships.
 2. **Watcher lease:** `repos-agent watch` writes a short-lived local heartbeat. `repos status` confirms both a fresh lease and a live PID.
 3. **Durable envelope:** `repos send` writes an immutable request under `.repo-connect/mail/`. Its `conversationId` links later responses.
-4. **Exclusive lock:** the recipient claims both its repository and the request. A second host cannot duplicate the work.
+4. **Exclusive lock:** the recipient claims both its repository and the request. A second host cannot duplicate the work. Locks that name a process are reclaimed as soon as that process is proven dead; the time-to-live is the fallback for legacy locks without a PID.
 5. **Evidence reply:** the host works only inside the recipient repository and returns a structured outcome, evidence, tests, and risks.
 6. **Acknowledgement:** the original request gains `acknowledgedAt`. The envelope remains in the audit trail.
 

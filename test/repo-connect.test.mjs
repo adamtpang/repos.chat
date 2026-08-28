@@ -236,6 +236,28 @@ test('a watcher wakes a repo rep and handles one request without manual run', ()
   assert.equal(status.presence.lastOutcome, 'completed');
 });
 
+test('a watcher immediately reclaims a lock whose process is dead', () => {
+  const root = workspace();
+  const watcherDir = path.join(root, '.repo-connect', 'watchers');
+  fs.mkdirSync(watcherDir, { recursive: true });
+  fs.writeFileSync(path.join(watcherDir, 'beta.json'), `${JSON.stringify({
+    repo: 'beta',
+    pid: 2147483647,
+    claimedAt: new Date().toISOString(),
+    heartbeatAt: new Date().toISOString(),
+  })}\n`);
+
+  const output = execFileSync(process.execPath, [
+    host,
+    'watch',
+    '--root', root,
+    '--repo', 'beta',
+    '--once',
+  ], { encoding: 'utf8' });
+  assert.equal(JSON.parse(output).watched, true);
+  assert.equal(fs.existsSync(path.join(watcherDir, 'beta.json')), false);
+});
+
 test('omits filesystem paths from inspector graph nodes', () => {
   const root = workspace();
   run(
@@ -257,4 +279,15 @@ test('omits filesystem paths from inspector graph nodes', () => {
   assert.equal(result.summary.assigned, 2);
   assert.equal(result.messages.length, 1);
   assert.equal('path' in result.nodes[0], false);
+
+  const focused = JSON.parse(execFileSync(process.execPath, [
+    dashboard,
+    '--root', root,
+    '--snapshot',
+    '--focus', 'alpha',
+  ], { encoding: 'utf8' }));
+  assert.deepEqual(focused.focus, ['alpha']);
+  assert.equal(focused.summary.repositories, 1);
+  assert.equal(focused.edges.length, 0);
+  assert.equal(focused.messages.length, 0);
 });
