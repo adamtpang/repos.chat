@@ -16,7 +16,7 @@ The repository is the rep's scope. `repos.yaml` is its identity and capability c
 | offline | No proactive runtime is currently proven | Missing, expired, or dead watcher lease |
 | idle | A watcher is alive and polling for bounded work | Fresh presence heartbeat plus a live local PID |
 | working | One host is handling one request | Live watcher and worker PIDs, repository lock, and message claim |
-| blocked | The last attempt could not safely complete | Structured blocked or declined outcome in presence and claim records |
+| blocked | The last attempt could not safely complete | Fresh blocked presence; a structured claim remains when the model returned a blocked or declined result |
 
 Assignment is configuration. Proactivity is runtime evidence. A model cannot promote itself to “awake” by saying so.
 

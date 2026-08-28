@@ -15,7 +15,7 @@ All notable changes to repos.chat are documented here.
 
 - Require every executable request and GitHub plan to repeat a content-bound human confirmation instead of trusting mutable local records or self-declared operator authority.
 - Keep active mail in a bounded open queue while preserving the complete local mailbox as a durable audit trail.
-- Route repository planning, review, testing, and release work through explicit local skill guidance.
+- Make repository planning, review, testing, and release workflows reproducible through explicit local skill guidance.
 
 ### Fixed
 

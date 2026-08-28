@@ -16,7 +16,7 @@ A **Repo Rep** is a bounded AI representative for one repository. It has a verif
 
 The protocol does not pretend that a file is a running AI agent. “Assigned” comes from the manifest and instructions. “Idle,” “working,” and “blocked” require a fresh watcher lease and a live local process. Codex, Claude, CI, or another host can supply the model runtime.
 
-Read [AGENT_PROTOCOL.md](AGENT_PROTOCOL.md) for the exact lifecycle and [PROTOCOL_RESEARCH.md](PROTOCOL_RESEARCH.md) for the comparison with A2A, MCP, FIPA ACL, ACP, ANP, AGNTCY, and current multi-agent frameworks.
+Read [AGENT_PROTOCOL.md](AGENT_PROTOCOL.md) for the exact lifecycle, [PROTOCOL_RESEARCH.md](PROTOCOL_RESEARCH.md) for the comparison with existing agent protocols, and [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## Install
 
@@ -24,7 +24,7 @@ Read [AGENT_PROTOCOL.md](AGENT_PROTOCOL.md) for the exact lifecycle and [PROTOCO
 npm install -g https://github.com/adamtpang/repos.chat/tarball/main
 ```
 
-Requires Node 18 or newer. No account, server, database, or runtime dependency is required.
+Requires Node 18 or newer. The core protocol CLI has no npm dependencies and needs no repos.chat account, server, or database. Running `repos-agent run` or `watch` with the included host also requires an installed, authenticated Codex CLI.
 
 Install the agent skills into every detected coding agent:
 
@@ -132,11 +132,11 @@ Messages are JSON files under `<root>/.repo-connect/mail/<repo>/`. They stay loc
 
 ## Run or wake one bounded Repo Rep
 
-The included Codex host adapter locks one repository and one request, gives Codex write access only to the recipient repository, requires structured evidence and test results, sends the result back through the mailbox, and acknowledges the request. Its observable child process tree is terminated before either lock is released. Interrupted requests remain open for at-least-once retry; result-addressed response IDs avoid retry collisions, and workspace claim files are audit records rather than proof that work completed.
+The included Codex host adapter locks one repository and one request, grants only the recipe-approved access to the recipient repository, requires structured evidence and test results, sends the result back through the mailbox, and acknowledges the request. Its observable child process tree is terminated before either lock is released. Interrupted requests remain open for at-least-once retry; result-addressed response IDs avoid retry collisions, and workspace claim files are audit records rather than proof that work completed.
 
 ```sh
-node agent-host.mjs run --root ~/projects --repo metrics-service --dry-run
-node agent-host.mjs run --root ~/projects --repo metrics-service
+repos-agent run --root ~/projects --repo metrics-service --dry-run
+repos-agent run --root ~/projects --repo metrics-service
 ```
 
 Keep the rep proactive so requests are handled without manually invoking `run`:
@@ -146,6 +146,8 @@ repos-agent watch --root ~/projects --repo metrics-service
 ```
 
 The watcher refreshes `.repo-connect/presence/<repo>.json`, polls the inbox, and preserves one-worker and one-message locks. Use `--once` for a scheduled or CI check.
+
+Host tuning flags are `--model <name>`, `--timeout-minutes <positive>`, `--lock-ttl-minutes <minimum 1>`, and `--interval-seconds <positive>`. `repos-agent run` also accepts `--id <request-id>` to select one open request.
 
 The current Node adapter is a bounded workflow host, not a kernel container. It cleans up observable descendants, including detached Windows children. Because a deliberately daemonized POSIX process can escape process-group cleanup, `branch-pr` host runs fail closed there; `read-only` and `propose-change` recipes remain available. Strong cgroup isolation is future host work.
 
@@ -159,6 +161,8 @@ repos-dashboard --root ~/projects
 
 Open `http://127.0.0.1:4777`. Every repository has a deterministic original pixel-art Repo Pet. The habitat distinguishes executable recipe routes from relationship-only edges and shows presence, proposals, conversations, recent local commits, and stored GitHub draft PRs. Add `?focus=repo-a,repo-b` to isolate a private subgraph. The inspector binds only to loopback and is separate from the public landing page.
 
+Use `repos-dashboard --port <port>` to choose another loopback port and `--focus repo-a,repo-b` to start with a filtered graph.
+
 ## Optional GitHub App contribution
 
 `repos-github` turns an approved `branch-pr` exchange into an app-authored commit and **draft** PR. Planning is local; opening requires the content-bound plan confirmation printed by the planner. The adapter checkpoints branch, commit, and PR stages so a retry resumes instead of duplicating remote work. It has no merge or deploy command.
@@ -167,13 +171,14 @@ Open `http://127.0.0.1:4777`. Every repository has a deterministic original pixe
 repos-github status
 repos-github plan --root ~/projects --repo metrics-service \
   --proposal PROPOSAL_ID --files src/schema.ts,test/schema.test.ts \
-  --tests "npm test: 18 passed" --title "Refresh metric contract"
+  --tests "npm test: 18 passed" --title "Refresh metric contract" --base main
 repos-github open --root ~/projects --id PLAN_ID --approve PLAN_ID:DIGEST_PREFIX
+repos-github sync --root ~/projects --repo metrics-service
 ```
 
 GitHub App registration and credentials remain operator-owned. Use only Metadata read, Contents write, and Pull requests write on selected repositories. See [GITHUB_APP.md](GITHUB_APP.md).
 
-It explicitly forbids external communication, deployment, purchases, commits, pushes, and edits to other repositories. See [AGENT_PROTOCOL.md](AGENT_PROTOCOL.md) for the host lifecycle and safety boundary.
+The Repo Rep host forbids external communication, deployment, purchases, commits, pushes, and edits to other repositories. Only the separately confirmed GitHub App flow may create its reviewed app-authored branch, commit, and draft PR. See [AGENT_PROTOCOL.md](AGENT_PROTOCOL.md) for the host lifecycle and safety boundary.
 
 ## Commands
 
@@ -189,9 +194,13 @@ repos send     write a response or non-executable notice
 repos inbox    read open or acknowledged messages
 repos ack      acknowledge without deleting history
 repos context  assemble one agent's verified boot context
+repos-agent run    preview or handle one bounded request
 repos-agent watch  keep one Repo Rep awake and handling requests
 repos-dashboard    inspect the local graph, presence, and conversations
-repos-github       plan, sync, or explicitly open an app-authored draft PR
+repos-github status  check GitHub App configuration without a network call
+repos-github plan    record reviewed files, hashes, tests, and base locally
+repos-github open    explicitly create the app-authored commit and draft PR
+repos-github sync    fetch recent PR metadata into the local inspector cache
 ```
 
 Use `--depth N` when manifests sit more than one directory below the workspace root.

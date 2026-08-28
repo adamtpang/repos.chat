@@ -49,10 +49,20 @@ repos approve --root ~/projects --id PROPOSAL_ID --approve PROPOSAL_ID:DIGEST_PR
 
 repos-github plan --root ~/projects --repo metrics-service \
   --proposal PROPOSAL_ID --files src/schema.ts,test/schema.test.ts \
-  --tests "npm test: 18 passed" --title "Refresh metric contract"
+  --tests "npm test: 18 passed" --title "Refresh metric contract" --base main
 
 repos-github open --root ~/projects --id PLAN_ID --approve PLAN_ID:DIGEST_PREFIX
 ```
+
+`--base` defaults to `main`; pass it explicitly when the repository uses another reviewed base branch.
+
+Refresh the localhost inspector's cached PR metadata after opening or reviewing pull requests:
+
+```sh
+repos-github sync --root ~/projects --repo metrics-service
+```
+
+`sync` reads the 20 most recent pull requests through the selected GitHub App installation and writes their public metadata to the local inspector cache. It does not change GitHub.
 
 GitHub documents that installation access tokens attribute actions to the app. The adapter uses GitHub's commit API so the commit is authored by the app identity, then the ordinary contributor graph can count it after the commit reaches the default branch. A draft PR alone is not a default-branch contribution.
 

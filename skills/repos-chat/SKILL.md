@@ -45,6 +45,10 @@ exchanges:
 
 Allowed triggers are `manual`, `webhook`, `ci`, and `contract-drift`. Allowed permissions are `read-only`, `propose-change`, and `branch-pr`. Every recipe requires human approval and a real evidence path.
 
+The current Node host runs `read-only` and `propose-change` recipes without repository writes. `branch-pr` grants local workspace edits on the tested Windows host; it fails closed on POSIX until cgroup-grade process containment is implemented. Remote mutations still require the separate guarded GitHub plan confirmation on every platform.
+
+`--dry-run` needs only the repos.chat CLI. Actual `repos-agent run` and `watch` execution also requires an installed, authenticated Codex CLI.
+
 Run verification after any manifest change:
 
 ```sh
