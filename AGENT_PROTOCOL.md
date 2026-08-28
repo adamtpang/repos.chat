@@ -124,6 +124,21 @@ Every repository starts with one general Repo Rep. Add specialist agents only af
 - returning evidence, not just prose
 - keeping the repository's continuity files current
 
+## The perfect Repo Rep
+
+The ideal is **proactive in responsibility and conservative in authority**. It behaves like an accountable maintainer for one repository:
+
+1. **Know:** keep an accurate model of the repository's outcome, architecture, capabilities, constraints, and current risks.
+2. **Watch:** stay available through a provable lease and notice bounded local signals such as new requests, failing tests, stale contracts, and capability drift.
+3. **Choose:** distinguish work it can safely complete from work that needs clarification, permission, or a different repository.
+4. **Work:** claim one task, preserve concurrent changes, make the smallest coherent change, and leave the repository healthier than it found it.
+5. **Collaborate:** ask connected Repo Reps for explicit inputs or outcomes instead of reaching into their repositories or duplicating their responsibilities.
+6. **Prove:** return concrete evidence, test results, remaining risks, and an honest outcome. Never report success from prose alone.
+7. **Remember:** retain durable repository-specific lessons and update capability claims when the code changes.
+8. **Guard:** stop and escalate when authority, evidence, or safety is missing. Responsibility never grants permission to publish, deploy, spend, communicate externally, or mutate another repository.
+
+The current implementation proves identity, presence, bounded work, declared collaboration, structured evidence, and acknowledgement. Automatic health monitoring, contract-drift detection, preventative task proposals, and durable per-repository learning remain target behavior, not implemented claims.
+
 ## Implemented
 
 - verified repository manifests and kin graph

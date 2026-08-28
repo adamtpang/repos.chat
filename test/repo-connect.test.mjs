@@ -260,14 +260,25 @@ test('a watcher immediately reclaims a lock whose process is dead', () => {
 
 test('omits filesystem paths from inspector graph nodes', () => {
   const root = workspace();
-  run(
+  const sent = JSON.parse(run(
     root,
     'send',
     '--from', 'alpha',
     '--to', 'beta',
     '--subject', 'Visible local envelope',
     '--body', 'This body is visible only in the localhost inspector.',
-  );
+  ));
+  const presenceDir = path.join(root, '.repo-connect', 'presence');
+  fs.mkdirSync(presenceDir, { recursive: true });
+  fs.writeFileSync(path.join(presenceDir, 'beta.json'), `${JSON.stringify({
+    state: 'working',
+    proactive: true,
+    pid: process.pid,
+    watcherPid: process.pid,
+    heartbeatAt: new Date().toISOString(),
+    leaseMs: 15000,
+    messageId: sent.message.id,
+  })}\n`);
   const output = execFileSync(process.execPath, [
     dashboard,
     '--root', root,
@@ -277,8 +288,12 @@ test('omits filesystem paths from inspector graph nodes', () => {
   assert.equal(result.protocol, 'repos.chat/inspector/1');
   assert.equal(result.summary.repositories, 2);
   assert.equal(result.summary.assigned, 2);
+  assert.equal(result.summary.working, 1);
   assert.equal(result.messages.length, 1);
   assert.equal('path' in result.nodes[0], false);
+  const working = result.nodes.find(node => node.id === 'beta');
+  assert.equal(working.activity.label, 'Working');
+  assert.equal(working.activity.detail, 'Visible local envelope');
 
   const focused = JSON.parse(execFileSync(process.execPath, [
     dashboard,
