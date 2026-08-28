@@ -20,7 +20,7 @@ The repository is the rep's scope. `repos.yaml` is its identity and capability c
 
 Assignment is configuration. Proactivity is runtime evidence. A model cannot promote itself to “awake” by saying so.
 
-## The six-step lifecycle
+## The six-step work lifecycle
 
 ```text
 manifest card -> watcher lease -> durable envelope -> exclusive lock -> evidence reply -> acknowledgement
@@ -33,6 +33,14 @@ manifest card -> watcher lease -> durable envelope -> exclusive lock -> evidence
 5. **Evidence reply:** the host works only inside the recipient repository and returns a structured outcome, evidence, tests, and risks.
 6. **Acknowledgement:** the original request gains `acknowledgedAt`. The envelope remains in the audit trail.
 
+An agent-originated request has an earlier authorization lifecycle:
+
+```text
+allowed signal -> local proposal -> exact human approval -> durable request
+```
+
+`manual`, `webhook`, `ci`, and `contract-drift` are allowed trigger classes. Every one creates a proposal only. `repos approve --id ID --approve ID` is the deliberate boundary that turns it into work. A raw operator request must carry `--operator`.
+
 ## Identity and discovery
 
 Each repository declares:
@@ -41,9 +49,23 @@ Each repository declares:
 - `is`: one-sentence purpose
 - `provides`: capabilities backed by real file paths
 - `kin`: repositories it can ask for related work, with a reason for each edge
+- `exchanges`: versioned recipes declaring the trigger, request, return value, permission, human approval, and evidence path
 - `canon`: shared constitution when one exists
 
 The verifier rejects capability claims whose evidence paths do not exist.
+It also rejects incomplete recipes, recipes aimed outside `kin`, unsupported triggers or permissions, and recipe evidence paths that do not exist.
+
+```yaml
+exchanges:
+  - id: refresh-metrics
+    with: metrics-service
+    trigger: contract-drift
+    asks: inspect the changed event contract
+    returns: compatible metric schema and migration notes
+    permission: branch-pr
+    approval: human-required
+    at: src/events.ts
+```
 
 An agent host assembles verified context with:
 
@@ -84,7 +106,19 @@ Presence records live under `.repo-connect/presence/`. They are operational arti
 
 Message kinds are `request`, `response`, and `notice`. A response uses `replyTo` and inherits the original `conversationId`. Acknowledgement adds a timestamp but does not delete the message.
 
-Version 2 remains local-first. Messages are JSON files under the workspace root. There is no account, server, network call, or model-provider dependency.
+Version 3 remains local-first. Messages are JSON files under the workspace root. Approved recipe requests carry proposal, exchange, and permission metadata. There is no required account, server, network call, or model-provider dependency.
+
+## Connection contract
+
+A `kin` edge means the repositories have a reason to know each other. It does not make them work. An `exchange` makes one direction executable:
+
+1. a named signal is observed
+2. the source Rep writes a proposal
+3. the human approves or declines it
+4. the recipient does only the declared work
+5. the recipient returns the declared artifact and evidence
+
+The direction matters. Add a reciprocal exchange only when the other repository has a different useful request to make. Similar branding, a shared audience, old naming history, or “could integrate later” is not sufficient.
 
 ## Host contract
 
@@ -109,6 +143,7 @@ Codex, Claude, a CI job, or a local scheduler can implement this lifecycle. The 
 - External communication, deployment, purchases, destructive changes, and privileged operations require the same approval they would require without repos.chat.
 - The receiver must not edit the sender's repository unless the host explicitly grants that scope.
 - Responses should cite concrete file paths, commits, test output, or source URLs.
+- Triggers and proposals never grant authority. Every recipe currently requires `approval: human-required`.
 - Acknowledgement means the message was handled, not that its claims are true.
 - The inspector binds only to `127.0.0.1`. It is not a public dashboard.
 - Remote transport, if added, must authenticate repositories and preserve an audit log.
@@ -150,6 +185,10 @@ The current implementation proves identity, presence, bounded work, declared col
 - proactive watcher with verifiable local presence
 - structured completion responses with evidence, tests, and risks
 - localhost graph, presence, and conversation inspector
+- recipe verifier plus manual/webhook/CI/contract-drift proposal triggers
+- explicit proposal approval before message delivery
+- guarded GitHub App planning, app-authored commit, and draft-PR adapter
+- local Git commits and stored GitHub PRs in the inspector
 
 ## Later, only if local use proves it
 

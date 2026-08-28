@@ -1,4 +1,4 @@
-# repos.yaml v0.4 - see repos.chat
+# repos.yaml v0.5 - see repos.chat
 repo: repos.chat
 is: Repository Representation Protocol for verified, proactive Repo Reps and durable local conversations.
 url: https://repos.chat
@@ -21,8 +21,14 @@ provides:
     what: runs or proactively watches locked inbox requests inside the recipient repository
     at: agent-host.mjs
   - id: local-protocol-inspector
-    what: visualizes the repository graph, live presence, and protocol envelopes on localhost
+    what: visualizes the full repository graph as original pixel Repo Pets with live presence, executable recipes, proposals, protocol envelopes, Git commits, and draft PRs on localhost
     at: dashboard.mjs
+  - id: exchange-proposals
+    what: verifies versioned exchange recipes and converts manual, webhook, CI, or contract-drift signals into human-approved durable requests
+    at: repos.mjs
+  - id: guarded-github-app
+    what: plans hash-locked changes and, only after exact confirmation, creates an app-authored commit and draft pull request with minimal GitHub App permissions
+    at: github-app.mjs
   - id: protocol-prior-art
     what: compares repos.chat with A2A, MCP, FIPA ACL, ACP, ANP, AGNTCY, and multi-agent frameworks
     at: PROTOCOL_RESEARCH.md

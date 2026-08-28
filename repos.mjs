@@ -10,6 +10,9 @@
 //   node repos.mjs inbox  [options]      read one repo's open messages
 //   node repos.mjs ack    [options]      acknowledge a message without deleting it
 //   node repos.mjs context [options]     emit the verified context an agent host needs
+//   node repos.mjs trigger [options]     turn an allowed signal into a reviewable proposal
+//   node repos.mjs proposals [options]   list pending or historical proposals
+//   node repos.mjs approve [options]     explicitly approve and deliver one proposal
 //
 // Why this exists: a manifest that points an agent at code which does not exist is
 // worse than no manifest at all. Claims rot silently. This makes them fail loudly.
@@ -17,6 +20,7 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { execFileSync } from 'child_process';
 
 const args = process.argv.slice(2);
 const cmd = args[0] || 'verify';
@@ -28,6 +32,9 @@ const depthIdx = args.indexOf('--depth');
 // (e.g. workspace-root/repos.yaml) and nested project manifests in one run.
 const DEPTH = depthIdx > -1 ? parseInt(args[depthIdx + 1], 10) : 1;
 const SKIP_DIRS = new Set(['node_modules', '.git', '.next', 'dist', 'build', '.turbo', '.vercel']);
+const GIT_BIN = process.env.GIT_BIN || (process.platform === 'win32'
+  ? ['C:\\Program Files\\Git\\cmd\\git.exe', 'C:\\Program Files\\Git\\bin\\git.exe'].find(fs.existsSync) || 'git.exe'
+  : 'git');
 
 const option = name => {
   const i = args.indexOf(`--${name}`);
@@ -149,6 +156,41 @@ function verify(repos) {
       seenKin.add(kr);
     }
 
+    const seenExchange = new Set();
+    for (const exchange of (m.exchanges || [])) {
+      if (!exchange || typeof exchange !== 'object') {
+        problems.push('exchange must be a map');
+        broken++;
+        continue;
+      }
+      const label = exchange.id || '(missing id)';
+      for (const field of ['id', 'with', 'trigger', 'asks', 'returns', 'permission', 'approval', 'at']) {
+        if (!exchange[field]) { problems.push(`exchange ${label}: missing ${field}`); broken++; }
+      }
+      if (exchange.id && !safeExchangeId(exchange.id)) {
+        problems.push(`exchange ${label}: id contains unsupported characters`); broken++;
+      }
+      if (seenExchange.has(exchange.id)) {
+        problems.push(`exchange ${label}: id is listed more than once`); broken++;
+      }
+      seenExchange.add(exchange.id);
+      if (exchange.with && !seenKin.has(exchange.with)) {
+        problems.push(`exchange ${label}: with ${exchange.with} is not declared in kin`); broken++;
+      }
+      if (exchange.trigger && !TRIGGERS.has(exchange.trigger)) {
+        problems.push(`exchange ${label}: trigger must be one of ${[...TRIGGERS].join(', ')}`); broken++;
+      }
+      if (exchange.permission && !PERMISSIONS.has(exchange.permission)) {
+        problems.push(`exchange ${label}: permission must be one of ${[...PERMISSIONS].join(', ')}`); broken++;
+      }
+      if (exchange.approval && exchange.approval !== 'human-required') {
+        problems.push(`exchange ${label}: approval must be human-required`); broken++;
+      }
+      if (exchange.at && !fs.existsSync(path.join(r.dir, exchange.at))) {
+        problems.push(`exchange ${label}: evidence ${exchange.at} does not exist`); broken++;
+      }
+    }
+
     const icon = problems.length ? `${C.r}✗${C.x}` : notes.length ? `${C.y}!${C.x}` : `${C.g}✓${C.x}`;
     console.log(`${icon} ${C.b}${r.name}${C.x}`);
     problems.forEach(p => console.log(`    ${C.r}BROKEN${C.x}  ${p}`));
@@ -198,8 +240,10 @@ function sync(repos) {
 
 /* ---------- graph -------------------------------------------------------- */
 function graph(repos) {
+  const gitRepos = new Set(String(option('git-repos') || '').split(',').filter(Boolean));
   const nodes = repos.map(r => {
     const id = repoId(r);
+    const includeGit = hasFlag('git') && (!gitRepos.size || gitRepos.has(id));
     const manifestValid = (r.m?.repo === r.name || r.isRoot === true)
       && typeof r.m?.is === 'string' && r.m.is.length > 0
       && Array.isArray(r.m?.kin);
@@ -211,14 +255,27 @@ function graph(repos) {
       provides: (r.m?.provides || []).map(p => typeof p === 'object' ? (p.id || Object.keys(p)[0]) : String(p).split(':')[0]),
       assigned: manifestValid && instructions,
       openMessages: readInbox(id).length,
+      pendingProposals: readProposals(id).filter(proposal => proposal.state === 'proposed').length,
       presence: readPresence(id),
+      git: includeGit ? gitSummary(r.dir) : null,
+      pullRequests: readPullRequests(id),
     };
   });
   const edges = [];
   for (const r of repos)
     for (const k of (r.m?.kin || [])) {
       const to = typeof k === 'object' ? k.repo : String(k);
-      edges.push({ from: repoId(r), to, why: typeof k === 'object' ? k.why : null });
+      const recipes = (r.m?.exchanges || [])
+        .filter(exchange => exchange && typeof exchange === 'object' && exchange.with === to)
+        .map(exchange => ({
+          id: exchange.id,
+          trigger: exchange.trigger,
+          asks: exchange.asks,
+          returns: exchange.returns,
+          permission: exchange.permission,
+          approval: exchange.approval,
+        }));
+      edges.push({ from: repoId(r), to, why: typeof k === 'object' ? k.why : null, ready: recipes.length > 0, recipes });
     }
   console.log(JSON.stringify({ nodes, edges }, null, 2));
   return 0;
@@ -230,7 +287,11 @@ function graph(repos) {
 // durable inbox without a server or provider-specific API.
 const MAIL_ROOT = path.join(ROOT, '.repo-connect', 'mail');
 const PRESENCE_ROOT = path.join(ROOT, '.repo-connect', 'presence');
+const PROPOSAL_ROOT = path.join(ROOT, '.repo-connect', 'proposals');
+const GITHUB_ROOT = path.join(ROOT, '.repo-connect', 'github');
 const MESSAGE_KINDS = new Set(['request', 'response', 'notice']);
+const TRIGGERS = new Set(['manual', 'webhook', 'ci', 'contract-drift']);
+const PERMISSIONS = new Set(['read-only', 'propose-change', 'branch-pr']);
 
 function repoId(r) {
   return r.m?.repo || r.name;
@@ -250,6 +311,21 @@ function safeMessageId(id) {
 
 function safeConversationId(id) {
   return typeof id === 'string' && /^[A-Za-z0-9._-]+$/.test(id);
+}
+
+function safeExchangeId(id) {
+  return typeof id === 'string' && /^[A-Za-z0-9._-]+$/.test(id);
+}
+
+function safeProposalId(id) {
+  return typeof id === 'string' && /^[A-Za-z0-9_-]+$/.test(id);
+}
+
+function writeJsonAtomic(dest, value) {
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  const temp = `${dest}.${process.pid}.tmp`;
+  fs.writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+  fs.renameSync(temp, dest);
 }
 
 function messagePath(to, id) {
@@ -281,6 +357,229 @@ function findMessageById(id) {
     try { return JSON.parse(fs.readFileSync(candidate, 'utf8')); } catch {}
   }
   return null;
+}
+
+function proposalPath(id) {
+  return path.join(PROPOSAL_ROOT, `${id}.json`);
+}
+
+function readProposals(repo = null) {
+  let names = [];
+  try { names = fs.readdirSync(PROPOSAL_ROOT).filter(name => name.endsWith('.json')); } catch { return []; }
+  const proposals = [];
+  for (const name of names) {
+    try {
+      const proposal = JSON.parse(fs.readFileSync(path.join(PROPOSAL_ROOT, name), 'utf8'));
+      if (!repo || proposal.from === repo || proposal.to === repo) proposals.push(proposal);
+    } catch {
+      // One corrupt proposal must not hide the remaining approval queue.
+    }
+  }
+  return proposals.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+}
+
+function readPullRequests(repo) {
+  const dest = path.join(GITHUB_ROOT, 'pull-requests', `${repo}.json`);
+  try {
+    const value = JSON.parse(fs.readFileSync(dest, 'utf8'));
+    return Array.isArray(value.pullRequests) ? value.pullRequests : [];
+  } catch { return []; }
+}
+
+function gitRun(dir, gitArgs) {
+  try {
+    return execFileSync(GIT_BIN, ['-C', dir, ...gitArgs], {
+      encoding: 'utf8',
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch { return ''; }
+}
+
+function gitSummary(dir) {
+  if (gitRun(dir, ['rev-parse', '--is-inside-work-tree']) !== 'true') return null;
+  const log = gitRun(dir, ['log', '-3', '--date=iso-strict', '--pretty=format:%h%x1f%cs%x1f%s']);
+  return {
+    branch: gitRun(dir, ['branch', '--show-current']) || '(detached)',
+    head: gitRun(dir, ['rev-parse', '--short', 'HEAD']) || null,
+    changedFiles: gitRun(dir, ['status', '--porcelain']).split(/\r?\n/).filter(Boolean).length,
+    commits: log ? log.split(/\r?\n/).map(line => {
+      const [hash, date, subject] = line.split('\x1f');
+      return { hash, date, subject };
+    }) : [],
+  };
+}
+
+function exchangeFor(repos, from, exchangeId) {
+  const source = findRepo(repos, from);
+  if (!source) return null;
+  const exchange = (source.m?.exchanges || []).find(item =>
+    item && typeof item === 'object' && item.id === exchangeId);
+  return exchange ? { source, exchange } : null;
+}
+
+function trigger(repos) {
+  const from = option('from');
+  const exchangeId = option('exchange');
+  const event = option('event') || 'manual';
+  const subject = option('subject');
+  const bodyFile = option('body-file');
+  let body = option('body');
+  if (!safeRepoId(from) || !safeExchangeId(exchangeId) || !TRIGGERS.has(event)) {
+    console.error(`trigger requires safe --from and --exchange plus --event ${[...TRIGGERS].join('|')}`);
+    return 1;
+  }
+  const resolved = exchangeFor(repos, from, exchangeId);
+  if (!resolved) {
+    console.error(`exchange not found: ${from}/${exchangeId}`);
+    return 1;
+  }
+  const { exchange } = resolved;
+  if (exchange.trigger !== event) {
+    console.error(`exchange ${exchangeId} accepts ${exchange.trigger}, not ${event}`);
+    return 1;
+  }
+  if (!findRepo(repos, exchange.with)) {
+    console.error(`exchange target is not available in this workspace: ${exchange.with}`);
+    return 1;
+  }
+  if (!subject) {
+    console.error('trigger requires --subject');
+    return 1;
+  }
+  if (bodyFile) {
+    try { body = fs.readFileSync(path.resolve(bodyFile), 'utf8'); }
+    catch (err) { console.error(`could not read --body-file: ${err.message}`); return 1; }
+  }
+  if (!body) {
+    console.error('trigger requires --body or --body-file');
+    return 1;
+  }
+  const createdAt = new Date().toISOString();
+  const stamp = createdAt.replace(/[-:.]/g, '');
+  const id = `${stamp}-${crypto.randomBytes(4).toString('hex')}`;
+  const proposal = {
+    version: 1,
+    protocol: 'repos.chat/proposal/1',
+    id,
+    state: 'proposed',
+    from,
+    to: exchange.with,
+    exchange: exchangeId,
+    event,
+    subject,
+    body,
+    recipe: {
+      asks: exchange.asks,
+      returns: exchange.returns,
+      permission: exchange.permission,
+      approval: exchange.approval,
+      evidence: exchange.at,
+    },
+    createdAt,
+  };
+  writeJsonAtomic(proposalPath(id), proposal);
+  console.log(JSON.stringify({ ok: true, delivered: false, proposal, next: `repos approve --id ${id} --approve ${id}` }, null, 2));
+  return 0;
+}
+
+function listProposals(repos) {
+  const repo = option('repo');
+  if (repo && (!safeRepoId(repo) || !findRepo(repos, repo))) {
+    console.error('proposals --repo must match a verified manifest');
+    return 1;
+  }
+  const proposals = readProposals(repo).filter(proposal => hasFlag('all') || proposal.state === 'proposed');
+  if (hasFlag('json')) {
+    console.log(JSON.stringify({ repo: repo || null, proposals }, null, 2));
+    return 0;
+  }
+  if (!proposals.length) {
+    console.log('no pending proposals');
+    return 0;
+  }
+  for (const proposal of proposals) {
+    console.log(`${proposal.id}  ${proposal.state}  ${proposal.from} -> ${proposal.to}  [${proposal.exchange}]`);
+    console.log(`    ${proposal.subject}`);
+  }
+  return 0;
+}
+
+function approve(repos) {
+  const id = option('id');
+  const confirmation = option('approve');
+  if (!safeProposalId(id) || confirmation !== id) {
+    console.error('approve requires --id ID and an exact --approve ID confirmation');
+    return 1;
+  }
+  let proposal;
+  try { proposal = JSON.parse(fs.readFileSync(proposalPath(id), 'utf8')); }
+  catch { console.error(`proposal not found: ${id}`); return 1; }
+  if (proposal.state !== 'proposed') {
+    console.error(`proposal ${id} is already ${proposal.state}`);
+    return 1;
+  }
+  const resolved = exchangeFor(repos, proposal.from, proposal.exchange);
+  if (!resolved || resolved.exchange.with !== proposal.to) {
+    console.error(`proposal ${id} no longer matches a declared exchange`);
+    return 1;
+  }
+  const delivered = deliverMessage(repos, {
+    from: proposal.from,
+    to: proposal.to,
+    kind: 'request',
+    subject: proposal.subject,
+    body: proposal.body,
+    metadata: { proposalId: id, exchange: proposal.exchange, permission: proposal.recipe.permission },
+  });
+  if (!delivered.ok) {
+    console.error(delivered.error);
+    return 1;
+  }
+  proposal.state = 'approved';
+  proposal.approvedAt = new Date().toISOString();
+  proposal.approvedBy = 'local-operator';
+  proposal.messageId = delivered.message.id;
+  writeJsonAtomic(proposalPath(id), proposal);
+  console.log(JSON.stringify({ ok: true, proposal, message: delivered.message }, null, 2));
+  return 0;
+}
+
+function deliverMessage(repos, input) {
+  const { from, to, subject } = input;
+  const kind = input.kind || 'request';
+  const replyTo = input.replyTo || null;
+  const requestedConversationId = input.conversationId || null;
+  const body = input.body;
+  if (!safeRepoId(from) || !safeRepoId(to)) return { ok: false, error: 'message requires safe from and to repo ids' };
+  if (!findRepo(repos, from) || !findRepo(repos, to)) return { ok: false, error: 'message requires from and to to match verified manifests in this workspace' };
+  if (!subject) return { ok: false, error: 'message requires a subject' };
+  if (!MESSAGE_KINDS.has(kind)) return { ok: false, error: `kind must be one of: ${[...MESSAGE_KINDS].join(', ')}` };
+  if (replyTo && !safeMessageId(replyTo)) return { ok: false, error: 'replyTo contains unsupported characters' };
+  if (requestedConversationId && !safeConversationId(requestedConversationId)) return { ok: false, error: 'conversationId contains unsupported characters' };
+  if (!body) return { ok: false, error: 'message requires a body' };
+
+  const createdAt = new Date().toISOString();
+  const stamp = createdAt.replace(/[-:.]/g, '');
+  const id = `${stamp}-${crypto.randomBytes(4).toString('hex')}`;
+  const parent = replyTo ? findMessageById(replyTo) : null;
+  const conversationId = requestedConversationId || parent?.conversationId || id;
+  const message = {
+    version: 3,
+    protocol: 'repos.chat/1',
+    id,
+    conversationId,
+    from,
+    to,
+    kind,
+    subject,
+    body,
+    createdAt,
+    ...(replyTo ? { replyTo } : {}),
+    ...(input.metadata ? { authorization: input.metadata } : {}),
+  };
+  writeJsonAtomic(messagePath(to, id), message);
+  return { ok: true, message };
 }
 
 function send(repos) {
@@ -325,32 +624,25 @@ function send(repos) {
     console.error('send requires --body or --body-file');
     return 1;
   }
-
-  const createdAt = new Date().toISOString();
-  const stamp = createdAt.replace(/[-:.]/g, '');
-  const id = `${stamp}-${crypto.randomBytes(4).toString('hex')}`;
-  const parent = replyTo ? findMessageById(replyTo) : null;
-  const conversationId = requestedConversationId || parent?.conversationId || id;
-  const message = {
-    version: 2,
-    protocol: 'repos.chat/1',
-    id,
-    conversationId,
+  if (kind === 'request' && !hasFlag('operator')) {
+    console.error('raw requests require --operator; recipe-driven agents must use trigger then approve');
+    return 1;
+  }
+  const delivered = deliverMessage(repos, {
     from,
     to,
-    kind,
     subject,
     body,
-    createdAt,
-    ...(replyTo ? { replyTo } : {}),
-  };
-
-  const dest = messagePath(to, id);
-  fs.mkdirSync(path.dirname(dest), { recursive: true });
-  const temp = `${dest}.${process.pid}.tmp`;
-  fs.writeFileSync(temp, `${JSON.stringify(message, null, 2)}\n`, 'utf8');
-  fs.renameSync(temp, dest);
-  console.log(JSON.stringify({ ok: true, message }, null, 2));
+    kind,
+    replyTo,
+    conversationId: requestedConversationId,
+    metadata: kind === 'request' ? { approval: 'manual-cli', approvedBy: 'local-operator' } : null,
+  });
+  if (!delivered.ok) {
+    console.error(delivered.error);
+    return 1;
+  }
+  console.log(JSON.stringify(delivered, null, 2));
   return 0;
 }
 
@@ -410,9 +702,11 @@ function context(repos) {
   const kinIds = (current.m?.kin || []).map(k => typeof k === 'object' ? k.repo : String(k));
   const kin = kinIds.map(kinId => {
     const related = findRepo(repos, kinId);
+    const exchanges = (current.m?.exchanges || []).filter(exchange =>
+      exchange && typeof exchange === 'object' && exchange.with === kinId);
     return related
-      ? { repo: repoId(related), is: related.m?.is, provides: related.m?.provides || [] }
-      : { repo: kinId, unavailable: true };
+      ? { repo: repoId(related), is: related.m?.is, provides: related.m?.provides || [], exchanges }
+      : { repo: kinId, unavailable: true, exchanges };
   });
   console.log(JSON.stringify({
     protocol: 'repo-connect/agent-context/v1',
@@ -420,6 +714,7 @@ function context(repos) {
     repo: { id: repoId(current), path: current.dir, manifest: current.m },
     kin,
     inbox: readInbox(repoId(current)),
+    proposals: readProposals(repoId(current)).filter(proposal => proposal.state === 'proposed'),
   }, null, 2));
   return 0;
 }
@@ -455,6 +750,8 @@ function status(repos) {
     instructions,
     capabilities: (current.m?.provides || []).length,
     connections: (current.m?.kin || []).length,
+    exchanges: (current.m?.exchanges || []).length,
+    pendingProposals: readProposals(repoId(current)).filter(proposal => proposal.state === 'proposed').length,
     openMessages: readInbox(repoId(current)).length,
     presence,
     runtime: presence.proactive
@@ -475,6 +772,8 @@ function status(repos) {
   ].filter(Boolean).join(', ') || 'none'}`);
   console.log(`  capabilities: ${result.capabilities}`);
   console.log(`  connections: ${result.connections}`);
+  console.log(`  executable exchanges: ${result.exchanges}`);
+  console.log(`  pending proposals: ${result.pendingProposals}`);
   console.log(`  open messages: ${result.openMessages}`);
   console.log(`  presence: ${presence.state}${presence.proactive ? ' (proactive)' : ''}`);
   console.log(`  runtime: ${result.runtime}`);
@@ -542,14 +841,18 @@ function help() {
   repos status  --root DIR --repo REPO [--json]
   repos graph   --root DIR [--depth N]
   repos sync    --root DIR
-  repos send    --root DIR --from REPO --to REPO --subject TEXT --body TEXT [--reply-to ID]
+  repos trigger --root DIR --from REPO --exchange ID --event EVENT --subject TEXT --body TEXT
+  repos proposals --root DIR [--repo REPO] [--json] [--all]
+  repos approve --root DIR --id PROPOSAL_ID --approve PROPOSAL_ID
+  repos send    --root DIR --from REPO --to REPO --subject TEXT --body TEXT --operator
   repos inbox   --root DIR --repo REPO [--json] [--all]
   repos ack     --root DIR --repo REPO --id MESSAGE_ID
   repos context --root DIR --repo REPO
 
 An assigned Repo Rep has a valid repos.yaml identity and at least one local
 instruction file. A live watcher lease makes it proactive and observable.
-Use repos-agent watch --root DIR --repo REPO to keep it awake, or run to handle once.`);
+Recipe triggers create proposals, never messages. Only an exact approve command
+delivers proposed work. Use repos-agent watch --root DIR --repo REPO to keep it awake.`);
   return 0;
 }
 
@@ -562,7 +865,7 @@ if (!repos.length) {
   console.log(`no repos.yaml found under ${ROOT}`);
   process.exit(0);
 }
-if (!['send', 'inbox', 'ack', 'context', 'status', 'graph'].includes(cmd)) {
+if (!['send', 'inbox', 'ack', 'context', 'status', 'graph', 'trigger', 'proposals', 'approve'].includes(cmd)) {
   console.log(`${C.d}${repos.length} manifests under ${ROOT}${C.x}\n`);
 }
 const code = cmd === 'sync' ? sync(repos)
@@ -570,6 +873,9 @@ const code = cmd === 'sync' ? sync(repos)
   : cmd === 'send' ? send(repos)
   : cmd === 'inbox' ? inbox(repos)
   : cmd === 'ack' ? acknowledge(repos)
+  : cmd === 'trigger' ? trigger(repos)
+  : cmd === 'proposals' ? listProposals(repos)
+  : cmd === 'approve' ? approve(repos)
   : cmd === 'context' ? context(repos)
   : cmd === 'status' ? status(repos)
   : verify(repos);

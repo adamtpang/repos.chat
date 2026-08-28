@@ -10,9 +10,10 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const cli = path.resolve(here, '..', 'repos.mjs');
 const host = path.resolve(here, '..', 'agent-host.mjs');
 const dashboard = path.resolve(here, '..', 'dashboard.mjs');
+const github = path.resolve(here, '..', 'github-app.mjs');
 
 function manifest(repo, kin) {
-  return `repo: ${repo}\nis: Test repository ${repo}\nprovides:\n  - id: proof\n    what: test proof\n    at: proof.txt\nkin:\n  - repo: ${kin}\n    why: test relationship\n`;
+  return `repo: ${repo}\nis: Test repository ${repo}\nprovides:\n  - id: proof\n    what: test proof\n    at: proof.txt\nkin:\n  - repo: ${kin}\n    why: test relationship\nexchanges:\n  - id: ask-${kin}\n    with: ${kin}\n    trigger: manual\n    asks: inspect proof\n    returns: evidence report\n    permission: read-only\n    approval: human-required\n    at: proof.txt\n`;
 }
 
 function workspace() {
@@ -37,6 +38,18 @@ test('verifies evidence-backed manifests', () => {
   const root = workspace();
   const output = run(root, 'verify');
   assert.match(output, /2 claims confirmed by a real path, 0 unverifiable, 0 broken/);
+});
+
+test('rejects exchange recipes without real evidence', () => {
+  const root = workspace();
+  const file = path.join(root, 'alpha', 'repos.yaml');
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(
+    'approval: human-required\n    at: proof.txt',
+    'approval: human-required\n    at: missing-contract.ts',
+  ));
+  const result = spawnSync(process.execPath, [cli, 'verify', '--root', root], { encoding: 'utf8' });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stdout, /exchange ask-beta: evidence missing-contract\.ts does not exist/);
 });
 
 test('reports whether a repository has an assigned Repo Rep', () => {
@@ -67,11 +80,12 @@ test('sends, reads, and acknowledges durable messages', () => {
     '--to', 'beta',
     '--subject', 'Need evidence',
     '--body', 'Return the proof path.',
+    '--operator',
   ));
 
   assert.equal(sent.ok, true);
   assert.equal(sent.message.to, 'beta');
-  assert.equal(sent.message.version, 2);
+  assert.equal(sent.message.version, 3);
   assert.equal(sent.message.protocol, 'repos.chat/1');
   assert.equal(sent.message.conversationId, sent.message.id);
 
@@ -103,6 +117,7 @@ test('emits manifest, kin, and inbox as agent context', () => {
     '--to', 'beta',
     '--subject', 'Context request',
     '--body', 'Use verified context.',
+    '--operator',
   );
   const context = JSON.parse(run(root, 'context', '--repo', 'beta'));
   assert.equal(context.protocol, 'repo-connect/agent-context/v1');
@@ -121,9 +136,73 @@ test('rejects unknown repository ids', () => {
     '--to', 'missing',
     '--subject', 'No route',
     '--body', 'This must fail.',
+    '--operator',
   ], { encoding: 'utf8' });
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /verified manifests/);
+});
+
+test('turns a recipe trigger into a proposal and requires exact human approval', () => {
+  const root = workspace();
+  const triggered = JSON.parse(run(
+    root,
+    'trigger',
+    '--from', 'alpha',
+    '--exchange', 'ask-beta',
+    '--event', 'manual',
+    '--subject', 'Review the proof',
+    '--body', 'Return the verified evidence path.',
+  ));
+  assert.equal(triggered.delivered, false);
+  assert.equal(triggered.proposal.state, 'proposed');
+  assert.equal(JSON.parse(run(root, 'inbox', '--repo', 'beta', '--json')).messages.length, 0);
+
+  const denied = spawnSync(process.execPath, [
+    cli, 'approve', '--root', root,
+    '--id', triggered.proposal.id,
+    '--approve', 'wrong-id',
+  ], { encoding: 'utf8' });
+  assert.notEqual(denied.status, 0);
+  assert.equal(JSON.parse(run(root, 'inbox', '--repo', 'beta', '--json')).messages.length, 0);
+
+  const approved = JSON.parse(run(
+    root,
+    'approve',
+    '--id', triggered.proposal.id,
+    '--approve', triggered.proposal.id,
+  ));
+  assert.equal(approved.proposal.state, 'approved');
+  assert.equal(approved.message.authorization.proposalId, triggered.proposal.id);
+  assert.equal(JSON.parse(run(root, 'inbox', '--repo', 'beta', '--json')).messages.length, 1);
+});
+
+test('raw requests require an explicit operator boundary', () => {
+  const root = workspace();
+  const result = spawnSync(process.execPath, [
+    cli, 'send', '--root', root,
+    '--from', 'alpha', '--to', 'beta',
+    '--subject', 'Unauthorized request', '--body', 'Must not be delivered.',
+  ], { encoding: 'utf8' });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /require --operator/);
+  assert.equal(JSON.parse(run(root, 'inbox', '--repo', 'beta', '--json')).messages.length, 0);
+});
+
+test('reports GitHub App readiness without exposing credential values', () => {
+  const output = execFileSync(process.execPath, [github, 'status'], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      REPOS_CHAT_GITHUB_APP_ID: '12345',
+      REPOS_CHAT_GITHUB_INSTALLATION_ID: '67890',
+      REPOS_CHAT_GITHUB_PRIVATE_KEY: 'secret-private-key',
+    },
+  });
+  const result = JSON.parse(output);
+  assert.equal(result.configured, true);
+  assert.equal(result.appId, 'present');
+  assert.doesNotMatch(output, /12345|67890|secret-private-key/);
+  assert.equal(result.requestedPermissions.pullRequests, 'write');
 });
 
 test('builds a bounded dry-run prompt for the recipient repository', () => {
@@ -135,6 +214,7 @@ test('builds a bounded dry-run prompt for the recipient repository', () => {
     '--to', 'beta',
     '--subject', 'Implement the bounded change',
     '--body', 'Inspect the code, make the change, and test it.',
+    '--operator',
   ));
   const output = execFileSync(process.execPath, [
     host,
@@ -160,6 +240,7 @@ test('runs a host, replies to the sender, and acknowledges the request', () => {
     '--to', 'beta',
     '--subject', 'Complete one bounded request',
     '--body', 'Use the repository evidence.',
+    '--operator',
   ));
 
   const fakeCodex = path.resolve(here, '..', 'fixtures', 'fake-codex.mjs');
@@ -209,6 +290,7 @@ test('a watcher wakes a repo rep and handles one request without manual run', ()
     '--to', 'beta',
     '--subject', 'Wake automatically',
     '--body', 'Return verified evidence.',
+    '--operator',
   ));
   const fakeCodex = path.resolve(here, '..', 'fixtures', 'fake-codex.mjs');
   const output = execFileSync(process.execPath, [
@@ -267,6 +349,7 @@ test('omits filesystem paths from inspector graph nodes', () => {
     '--to', 'beta',
     '--subject', 'Visible local envelope',
     '--body', 'This body is visible only in the localhost inspector.',
+    '--operator',
   ));
   const presenceDir = path.join(root, '.repo-connect', 'presence');
   fs.mkdirSync(presenceDir, { recursive: true });
@@ -285,14 +368,14 @@ test('omits filesystem paths from inspector graph nodes', () => {
     '--snapshot',
   ], { encoding: 'utf8' });
   const result = JSON.parse(output);
-  assert.equal(result.protocol, 'repos.chat/inspector/1');
+  assert.equal(result.protocol, 'repos.chat/inspector/2');
   assert.equal(result.summary.repositories, 2);
   assert.equal(result.summary.assigned, 2);
   assert.equal(result.summary.working, 1);
   assert.equal(result.messages.length, 1);
   assert.equal('path' in result.nodes[0], false);
   const working = result.nodes.find(node => node.id === 'beta');
-  assert.equal(working.activity.label, 'Working');
+  assert.equal(working.activity.label, 'Questing');
   assert.equal(working.activity.detail, 'Visible local envelope');
 
   const focused = JSON.parse(execFileSync(process.execPath, [

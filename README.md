@@ -8,9 +8,11 @@ A **Repo Rep** is a bounded AI representative for one repository. It has a verif
 
 1. `repos.yaml` says what each repository is, what it can provide, and why it is related to its neighbors.
 2. The verifier checks that every capability claim points to real code.
-3. A local mailbox lets Repo Reps request work and return evidence without sharing write access.
-4. A proactive watcher proves when a rep is awake and runs one request at a time.
-5. A localhost inspector shows the graph, presence, and exact protocol envelopes.
+3. Versioned exchange recipes define what connected Reps may ask for and return.
+4. Manual, webhook, CI, and contract-drift signals create proposals that require explicit human approval.
+5. A local mailbox lets Repo Reps exchange approved work and evidence without sharing write access.
+6. A proactive watcher proves when a rep is awake and runs one request at a time.
+7. A localhost pixel-pet habitat shows the whole graph, presence, proposals, conversations, commits, and draft PRs.
 
 The protocol does not pretend that a file is a running AI agent. “Assigned” comes from the manifest and instructions. “Idle,” “working,” and “blocked” require a fresh watcher lease and a live local process. Codex, Claude, CI, or another host can supply the model runtime.
 
@@ -53,6 +55,16 @@ stack: [next, typescript]
 kin:
   - repo: metrics-service
     why: product releases use its verified outcome metrics
+
+exchanges:
+  - id: refresh-release-metrics
+    with: metrics-service
+    trigger: contract-drift
+    asks: inspect the changed release event contract
+    returns: compatible metric schema and migration notes
+    permission: branch-pr
+    approval: human-required
+    at: src/agent.ts
 ```
 
 Then verify the workspace:
@@ -72,16 +84,35 @@ repos status --root ~/projects --repo metrics-service --json
 
 "Assigned" means the repository has a valid `repos.yaml` identity plus at least one local instruction file, `AGENTS.md` or `CLAUDE.md`. "Proactive" means a watcher has a fresh lease and a live PID.
 
-## Let Repo Reps talk
+## Let Repo Reps propose work
 
-Send a request:
+A connection is discoverability. An exchange recipe is runnable. A trigger always creates a local proposal first:
+
+```sh
+repos trigger --root ~/projects \
+  --from product-app \
+  --exchange refresh-release-metrics \
+  --event contract-drift \
+  --subject "Refresh the release metric contract" \
+  --body "Return the compatible schema and migration notes."
+
+repos proposals --root ~/projects --repo product-app
+repos approve --root ~/projects --id PROPOSAL_ID --approve PROPOSAL_ID
+```
+
+The exact repeated ID is the human authorization boundary. Before approval, nothing reaches the recipient inbox.
+
+## Use the raw operator transport
+
+For a one-off request typed directly by a trusted local operator:
 
 ```sh
 repos send --root ~/projects \
   --from research-agent \
   --to metrics-service \
   --subject "Compare release outcome metrics" \
-  --body "Return the smallest metric set supported by the evidence."
+  --body "Return the smallest metric set supported by the evidence." \
+  --operator
 ```
 
 Read a repository's inbox:
@@ -124,7 +155,21 @@ Start the read-only local inspector:
 repos-dashboard --root ~/projects
 ```
 
-Open `http://127.0.0.1:4777`. It shows Repo Rep states, declared repository edges, conversation threads, acknowledgement status, and raw envelopes. Add `?focus=repo-a,repo-b` to isolate a private subgraph and only the conversations within it. The inspector binds only to loopback and is separate from the public landing page.
+Open `http://127.0.0.1:4777`. Every repository has a deterministic original pixel-art Repo Pet. The habitat distinguishes executable recipe routes from relationship-only edges and shows presence, proposals, conversations, recent local commits, and stored GitHub draft PRs. Add `?focus=repo-a,repo-b` to isolate a private subgraph. The inspector binds only to loopback and is separate from the public landing page.
+
+## Optional GitHub App contribution
+
+`repos-github` turns an approved `branch-pr` exchange into an app-authored commit and **draft** PR. Planning is local; opening requires the exact plan ID again. The adapter has no merge or deploy command.
+
+```sh
+repos-github status
+repos-github plan --root ~/projects --repo metrics-service \
+  --proposal PROPOSAL_ID --files src/schema.ts,test/schema.test.ts \
+  --tests "npm test: 18 passed" --title "Refresh metric contract"
+repos-github open --root ~/projects --id PLAN_ID --approve PLAN_ID
+```
+
+GitHub App registration and credentials remain operator-owned. Use only Metadata read, Contents write, and Pull requests write on selected repositories. See [GITHUB_APP.md](GITHUB_APP.md).
 
 It explicitly forbids external communication, deployment, purchases, commits, pushes, and edits to other repositories. See [AGENT_PROTOCOL.md](AGENT_PROTOCOL.md) for the host lifecycle and safety boundary.
 
@@ -135,12 +180,16 @@ repos verify   confirm manifest claims against real paths
 repos status   show one Repo Rep's assignment and live presence
 repos graph    emit repositories and kin edges as JSON
 repos sync     detect drift in shared canon files
-repos send     write a durable request, response, or notice
+repos trigger  create a reviewable proposal from an allowed signal
+repos proposals list pending or historical proposals
+repos approve  explicitly deliver one proposal as a request
+repos send     write a manual operator request, response, or notice
 repos inbox    read open or acknowledged messages
 repos ack      acknowledge without deleting history
 repos context  assemble one agent's verified boot context
 repos-agent watch  keep one Repo Rep awake and handling requests
 repos-dashboard    inspect the local graph, presence, and conversations
+repos-github       plan, sync, or explicitly open an app-authored draft PR
 ```
 
 Use `--depth N` when manifests sit more than one directory below the workspace root.
@@ -169,6 +218,6 @@ A manifest that sends an agent to nonexistent code is worse than no manifest. Ca
 
 ## Status
 
-v0.4 implements the Repository Representation Protocol: manifest verification, Repo Rep status, live watcher leases, conversation ids, canon drift checks, graph export, local mail, machine-readable context, a bounded Codex host adapter, a localhost inspector, and installable Repo Rep and GitHub-star-matching skills.
+v0.5 implements the Repository Representation Protocol: manifest and recipe verification, four proposal trigger classes, exact human approval, live watcher leases, conversation ids, canon drift checks, graph export, local mail, machine-readable context, a bounded Codex host adapter, an original pixel-pet localhost habitat, Git/PR visibility, a guarded GitHub App draft-PR adapter, and installable Repo Rep and GitHub-star-matching skills.
 
 MIT.

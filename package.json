@@ -1,18 +1,21 @@
 {
   "name": "repos.chat",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Every repo gets a rep: verified identity, proactive presence, and durable local conversations.",
   "type": "module",
   "bin": {
     "repos": "./repos.mjs",
     "repos-agent": "./agent-host.mjs",
-    "repos-dashboard": "./dashboard.mjs"
+    "repos-dashboard": "./dashboard.mjs",
+    "repos-github": "./github-app.mjs"
   },
   "files": [
     "repos.mjs",
     "agent-host.mjs",
     "dashboard.mjs",
+    "github-app.mjs",
     "AGENT_PROTOCOL.md",
+    "GITHUB_APP.md",
     "PROTOCOL_RESEARCH.md",
     "README.md",
     "skills"
