@@ -94,16 +94,30 @@ repos context --root ~/projects --repo metrics-service
 
 Messages are JSON files under `<root>/.repo-connect/mail/<repo>/`. They stay local unless the operator deliberately adds a remote transport.
 
-## Run one bounded repository agent
+## Run one bounded repository agent, on any model
 
-The included Codex host adapter locks one repository and one request, gives Codex write access only to the recipient repository, requires structured evidence and test results, sends the result back through the mailbox, and acknowledges the request.
+The host adapter locks one repository and one request, gives the model write access only to the recipient repository, requires structured evidence and test results, sends the result back through the mailbox, and acknowledges the request. Codex, Claude, and Grok are supported; each uses its own sign-in.
 
 ```sh
-node agent-host.mjs run --root ~/projects --repo metrics-service --dry-run
-node agent-host.mjs run --root ~/projects --repo metrics-service
+repos-agent hosts
+repos-agent run --root ~/projects --repo metrics-service --dry-run
+repos-agent run --root ~/projects --repo metrics-service --host grok
+repos-agent run --root ~/projects --repo metrics-service --host claude --read-only
 ```
 
-It explicitly forbids external communication, deployment, purchases, commits, pushes, and edits to other repositories. See [AGENT_PROTOCOL.md](AGENT_PROTOCOL.md) for the host lifecycle and safety boundary.
+Without `--host`, the request's `wantHost` decides, then Codex. The reply records which model answered, so one thread can hold a Grok turn followed by a Claude turn, and each model sees the earlier turns. It explicitly forbids external communication, deployment, purchases, commits, pushes, and edits to other repositories. See [AGENT_PROTOCOL.md](AGENT_PROTOCOL.md) for the host lifecycle and safety boundary.
+
+## Talk from inside a live agent session
+
+`repos-mcp` gives any MCP client the mailbox as tools, so an agent you are already working with can ask another repository's agent for help and read the reply.
+
+```sh
+claude mcp add repos -- node /path/to/repos.chat/mcp.mjs --root ~/projects --as metrics-service
+codex mcp add repos -- node /path/to/repos.chat/mcp.mjs --root ~/projects --as metrics-service
+grok mcp add repos node -- /path/to/repos.chat/mcp.mjs --root ~/projects --as metrics-service
+```
+
+The session then has `repos_whoami`, `repos_graph`, `repos_send`, `repos_inbox`, `repos_thread`, and `repos_ack`. The identity is fixed when the server starts, so a message from another agent cannot make yours send as someone else. [BRIDGES.md](BRIDGES.md) compares this with A2A, MCP Agent Mail, ACP, and the CLI-to-CLI bridges it learned from.
 
 ## Commands
 
@@ -115,7 +129,10 @@ repos sync     detect drift in shared canon files
 repos send     write a durable request, response, or notice
 repos inbox    read open or acknowledged messages
 repos ack      acknowledge without deleting history
+repos thread   read one conversation across every mailbox
 repos context  assemble one agent's verified boot context
+repos-agent    run one request on codex, claude, or grok
+repos-mcp      serve the mailbox to a live agent session over MCP
 ```
 
 Use `--depth N` when manifests sit more than one directory below the workspace root.
@@ -144,6 +161,6 @@ A manifest that sends an agent to nonexistent code is worse than no manifest. Ca
 
 ## Status
 
-v0.3 implements manifest verification, owner status, canon drift checks, graph export, local mail, machine-readable context, a bounded Codex host adapter, and installable repository-owner and GitHub-star-matching skills. Continuous scheduling remains deliberately separate.
+v0.3 implements manifest verification, owner status, canon drift checks, graph export, local mail with threads and A2A-aligned task states, machine-readable context, bounded host adapters for Codex, Claude, and Grok, an MCP server for live sessions, and installable repository-owner and GitHub-star-matching skills. Continuous scheduling remains deliberately separate.
 
 MIT.

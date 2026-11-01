@@ -17,9 +17,18 @@ provides:
   - id: agent-protocol
     what: defines the provider-neutral lifecycle and safety boundary for one AI agent per repository
     at: AGENT_PROTOCOL.md
-  - id: codex-agent-host
-    what: runs one locked inbox request inside the recipient repository and returns an evidence-bearing response
+  - id: agent-host
+    what: runs one locked inbox request inside the recipient repository on codex, claude, or grok and returns an evidence-bearing response with thread history
     at: agent-host.mjs
+  - id: model-host-adapters
+    what: one schema-constrained headless adapter per model CLI (codex, claude, grok) sharing a single completion contract mapped to A2A task states
+    at: hosts.mjs
+  - id: mcp-server
+    what: stdio MCP server giving any live agent session the mailbox as tools (whoami, graph, send, inbox, thread, ack) under a launch-fixed identity
+    at: mcp.mjs
+  - id: bridge-research
+    what: comparison of A2A, MCP Agent Mail, ACP, PAL clink, and Codex-as-MCP wrappers, with what repos.chat borrows and refuses
+    at: BRIDGES.md
   - id: repository-owner-skill
     what: installable skill for assigning, verifying, and coordinating bounded repository owner agents
     at: skills/repos-chat/SKILL.md

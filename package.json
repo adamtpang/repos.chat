@@ -1,22 +1,27 @@
 {
   "name": "repos.chat",
   "version": "0.3.0",
-  "description": "Verified relationships and durable local mail for repository-native AI agents.",
+  "description": "Verified relationships, durable local mail, and cross-model host adapters for repository-native AI agents.",
   "type": "module",
   "bin": {
     "repos": "./repos.mjs",
-    "repos-agent": "./agent-host.mjs"
+    "repos-agent": "./agent-host.mjs",
+    "repos-mcp": "./mcp.mjs"
   },
   "files": [
     "repos.mjs",
     "agent-host.mjs",
+    "BRIDGES.md",
+    "mcp.mjs",
+    "hosts.mjs",
     "AGENT_PROTOCOL.md",
     "README.md",
     "skills"
   ],
   "scripts": {
     "test": "node --test",
-    "agent": "node agent-host.mjs run"
+    "agent": "node agent-host.mjs run",
+    "mcp": "node mcp.mjs"
   },
   "engines": {
     "node": ">=18"
@@ -34,7 +39,11 @@
     "repositories",
     "multi-agent",
     "codex",
-    "local-first"
+    "local-first",
+    "mcp",
+    "claude",
+    "grok",
+    "agent-to-agent"
   ],
   "author": "Adam Pang",
   "license": "MIT"

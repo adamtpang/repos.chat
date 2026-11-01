@@ -9,6 +9,7 @@
 //   node repos.mjs send   [options]      send a durable local message between repos
 //   node repos.mjs inbox  [options]      read one repo's open messages
 //   node repos.mjs ack    [options]      acknowledge a message without deleting it
+//   node repos.mjs thread [options]      read one conversation across every mailbox
 //   node repos.mjs context [options]     emit the verified context an agent host needs
 //
 // Why this exists: a manifest that points an agent at code which does not exist is
@@ -219,6 +220,14 @@ function graph(repos) {
 // durable inbox without a server or provider-specific API.
 const MAIL_ROOT = path.join(ROOT, '.repo-connect', 'mail');
 const MESSAGE_KINDS = new Set(['request', 'response', 'notice']);
+// Aligned with A2A TaskState so a bridge can map one onto the other without a
+// lookup table: input-required means the receiver needs something before it
+// can continue, rejected means it declined on principle, failed means the host
+// itself broke. Absent on plain notices and on version 1 messages.
+const MESSAGE_STATES = new Set(['submitted', 'working', 'input-required', 'completed', 'failed', 'canceled', 'rejected']);
+// The model hosts repos-agent can run. A request may name one in wantHost; a
+// response records the one that actually answered in host.
+const HOST_NAMES = new Set(['codex', 'claude', 'grok']);
 
 function repoId(r) {
   return r.m?.repo || r.name;
@@ -264,6 +273,11 @@ function send(repos) {
   let body = option('body');
   const kind = option('kind') || 'request';
   const replyTo = option('reply-to');
+  const thread = option('thread');
+  const state = option('state') || (kind === 'request' ? 'submitted' : null);
+  const wantHost = option('want-host');
+  const hostName = option('host');
+  const hostModel = option('model');
 
   if (!safeRepoId(from) || !safeRepoId(to)) {
     console.error('send requires safe --from and --to repo ids');
@@ -289,20 +303,53 @@ function send(repos) {
     console.error('send requires --body or --body-file');
     return 1;
   }
+  if (state && !MESSAGE_STATES.has(state)) {
+    console.error(`send --state must be one of: ${[...MESSAGE_STATES].join(', ')}`);
+    return 1;
+  }
+  for (const [flag, value] of [['want-host', wantHost], ['host', hostName]]) {
+    if (value && !HOST_NAMES.has(value)) {
+      console.error(`send --${flag} must be one of: ${[...HOST_NAMES].join(', ')}`);
+      return 1;
+    }
+  }
+  if (replyTo && !safeMessageId(replyTo)) {
+    console.error('send --reply-to contains unsupported characters');
+    return 1;
+  }
+  if (thread && !safeMessageId(thread)) {
+    console.error('send --thread contains unsupported characters');
+    return 1;
+  }
 
   const createdAt = new Date().toISOString();
   const stamp = createdAt.replace(/[-:.]/g, '');
   const id = `${stamp}-${crypto.randomBytes(4).toString('hex')}`;
+  // A reply joins its parent's thread. The parent was addressed to the
+  // replying repository, so it lives in the sender's own inbox.
+  let threadId = thread;
+  if (!threadId && replyTo) {
+    try {
+      const parent = JSON.parse(fs.readFileSync(messagePath(from, replyTo), 'utf8'));
+      threadId = parent.threadId || parent.id;
+    } catch {
+      threadId = replyTo;
+    }
+  }
   const message = {
-    version: 1,
+    version: 2,
     id,
+    threadId: threadId || id,
     from,
     to,
     kind,
+    ...(state ? { state } : {}),
     subject,
     body,
     createdAt,
     ...(replyTo ? { replyTo } : {}),
+    ...(wantHost ? { wantHost } : {}),
+    ...(hostName ? { host: { name: hostName, ...(hostModel ? { model: hostModel } : {}) } } : {}),
   };
 
   const dest = messagePath(to, id);
@@ -357,6 +404,53 @@ function acknowledge(repos) {
   fs.writeFileSync(temp, `${JSON.stringify(message, null, 2)}\n`, 'utf8');
   fs.renameSync(temp, dest);
   console.log(JSON.stringify({ ok: true, message }, null, 2));
+  return 0;
+}
+
+function readAllMail() {
+  let boxes = [];
+  try { boxes = fs.readdirSync(MAIL_ROOT); } catch { return []; }
+  return boxes.filter(safeRepoId).flatMap(box => readInbox(box, true));
+}
+
+// Version 1 messages carry no threadId, so their thread is the root of their
+// replyTo chain. Version 2 messages carry it directly.
+function threadOf(message, byId, seen = new Set()) {
+  if (message.threadId) return message.threadId;
+  if (!message.replyTo || seen.has(message.id)) return message.id;
+  seen.add(message.id);
+  const parent = byId.get(message.replyTo);
+  return parent ? threadOf(parent, byId, seen) : message.replyTo;
+}
+
+function thread() {
+  const id = option('id');
+  if (!safeMessageId(id)) {
+    console.error('thread requires --id with a message or thread id');
+    return 1;
+  }
+  const all = readAllMail();
+  const byId = new Map(all.map(message => [message.id, message]));
+  const target = byId.get(id) ? threadOf(byId.get(id), byId) : id;
+  const messages = all
+    .filter(message => threadOf(message, byId) === target)
+    .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+  if (!messages.length) {
+    console.error(`no messages in thread ${id}`);
+    return 1;
+  }
+  if (hasFlag('json')) {
+    console.log(JSON.stringify({ threadId: target, messages }, null, 2));
+    return 0;
+  }
+  console.log(`thread ${target}  ${messages.length} message${messages.length === 1 ? '' : 's'}\n`);
+  for (const message of messages) {
+    const host = message.host ? `  via ${message.host.name}${message.host.model ? `/${message.host.model}` : ''}` : '';
+    const state = message.state ? `  [${message.state}]` : '';
+    console.log(`${message.createdAt}  ${message.from} -> ${message.to}  ${message.kind}${state}${host}`);
+    console.log(`  ${message.subject}`);
+    console.log(`  ${String(message.body).split('\n').join('\n  ')}\n`);
+  }
   return 0;
 }
 
@@ -442,13 +536,17 @@ function help() {
   repos graph   --root DIR [--depth N]
   repos sync    --root DIR
   repos send    --root DIR --from REPO --to REPO --subject TEXT --body TEXT
+                [--kind request|response|notice] [--reply-to ID] [--thread ID]
+                [--state STATE] [--want-host codex|claude|grok]
   repos inbox   --root DIR --repo REPO [--json] [--all]
   repos ack     --root DIR --repo REPO --id MESSAGE_ID
+  repos thread  --root DIR --id MESSAGE_OR_THREAD_ID [--json]
   repos context --root DIR --repo REPO
 
 An assigned owner has a valid repos.yaml identity and at least one local
 instruction file. Assignment does not mean a model process is always running.
-Use repos-agent run --root DIR --repo REPO to handle one open request.`);
+Use repos-agent run --root DIR --repo REPO to handle one open request, and
+repos-mcp --root DIR --as REPO to give a live agent session these as tools.`);
   return 0;
 }
 
@@ -461,7 +559,7 @@ if (!repos.length) {
   console.log(`no repos.yaml found under ${ROOT}`);
   process.exit(0);
 }
-if (!['send', 'inbox', 'ack', 'context', 'status'].includes(cmd)) {
+if (!['send', 'inbox', 'ack', 'context', 'status', 'thread', 'graph'].includes(cmd)) {
   console.log(`${C.d}${repos.length} manifests under ${ROOT}${C.x}\n`);
 }
 const code = cmd === 'sync' ? sync(repos)
@@ -469,6 +567,7 @@ const code = cmd === 'sync' ? sync(repos)
   : cmd === 'send' ? send(repos)
   : cmd === 'inbox' ? inbox(repos)
   : cmd === 'ack' ? acknowledge(repos)
+  : cmd === 'thread' ? thread()
   : cmd === 'context' ? context(repos)
   : cmd === 'status' ? status(repos)
   : verify(repos);
