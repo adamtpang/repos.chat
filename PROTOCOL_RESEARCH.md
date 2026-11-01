@@ -87,3 +87,5 @@ repos.chat is a local-first Repository Representation Protocol with five distinc
 5. evidence-bearing replies and an inspectable audit trail
 
 The localhost inspector borrows the visibility of A2A Inspector, but it reads local artifacts and exposes no public network listener.
+
+Cross-model bridges between coding-agent CLIs (MCP Agent Mail, ACP, PAL `clink`, and Codex-as-MCP wrappers) are compared separately in [BRIDGES.md](BRIDGES.md).

@@ -13,6 +13,7 @@
 //   node repos.mjs trigger [options]     turn an allowed signal into a reviewable proposal
 //   node repos.mjs proposals [options]   list pending or historical proposals
 //   node repos.mjs approve [options]     explicitly approve and deliver one proposal
+//   node repos.mjs conversation [options] read one conversation across every mailbox
 //
 // Why this exists: a manifest that points an agent at code which does not exist is
 // worse than no manifest at all. Claims rot silently. This makes them fail loudly.
@@ -305,6 +306,13 @@ const GITHUB_ROOT = path.join(ROOT, '.repo-connect', 'github');
 const MESSAGE_KINDS = new Set(['request', 'response', 'notice']);
 const TRIGGERS = new Set(['manual', 'webhook', 'ci', 'contract-drift']);
 const PERMISSIONS = new Set(['read-only', 'propose-change', 'branch-pr']);
+// Model hosts repos-agent can run (see hosts.mjs). A recipe may pin one with
+// host; a response records the one that answered.
+const HOSTS = new Set(['codex', 'claude', 'grok']);
+// Aligned with A2A TaskState so a bridge can map one onto the other directly.
+// Host responses map the completion outcome: completed, blocked to
+// input-required, declined to rejected.
+const RESPONSE_STATES = new Set(['completed', 'input-required', 'rejected', 'failed', 'canceled']);
 
 function repoId(r) {
   return r.m?.repo || r.name;
@@ -429,6 +437,9 @@ function recipeSnapshot(exchange) {
     permission: exchange.permission,
     approval: exchange.approval,
     evidence: exchange.at,
+    // Only present when pinned, so recipes without a host keep the digest
+    // they had before hosts existed and in-flight approvals stay valid.
+    ...(exchange.host ? { host: exchange.host } : {}),
   };
 }
 
@@ -446,6 +457,7 @@ function validateExchange(repos, source, exchange) {
   if (!TRIGGERS.has(exchange.trigger)) return `unsupported trigger: ${exchange.trigger}`;
   if (!PERMISSIONS.has(exchange.permission)) return `unsupported permission: ${exchange.permission}`;
   if (exchange.approval !== 'human-required') return 'exchange approval must be human-required';
+  if (exchange.host !== undefined && !HOSTS.has(exchange.host)) return `unsupported host: ${exchange.host}`;
   const evidence = containedEvidence(source.dir, exchange.at);
   if (!evidence.ok) return `exchange evidence ${exchange.at} ${evidence.error}`;
   return null;
@@ -464,9 +476,10 @@ function deliveryPath(to, id) {
 }
 
 function sameMessage(left, right) {
-  return ['id', 'from', 'to', 'kind', 'subject', 'body', 'replyTo', 'conversationId']
+  return ['id', 'from', 'to', 'kind', 'subject', 'body', 'replyTo', 'conversationId', 'state']
     .every(key => (left?.[key] ?? null) === (right?.[key] ?? null))
-    && JSON.stringify(left?.authorization || null) === JSON.stringify(right?.authorization || null);
+    && JSON.stringify(left?.authorization || null) === JSON.stringify(right?.authorization || null)
+    && JSON.stringify(left?.host || null) === JSON.stringify(right?.host || null);
 }
 
 function writeMessageExclusive(message) {
@@ -609,6 +622,55 @@ function findMessageById(id) {
   return null;
 }
 
+function readAllMail() {
+  let boxes = [];
+  try { boxes = fs.readdirSync(MAIL_ROOT, { withFileTypes: true }); } catch { return []; }
+  return boxes
+    .filter(entry => entry.isDirectory() && safeRepoId(entry.name))
+    .flatMap(entry => readInbox(entry.name, true));
+}
+
+// Messages from before conversationId existed belong to the root of their
+// replyTo chain.
+function conversationOf(message, byId, seen = new Set()) {
+  if (message.conversationId) return message.conversationId;
+  if (!message.replyTo || seen.has(message.id)) return message.id;
+  seen.add(message.id);
+  const parent = byId.get(message.replyTo);
+  return parent ? conversationOf(parent, byId, seen) : message.replyTo;
+}
+
+function conversation() {
+  const id = option('id');
+  if (!safeConversationId(id)) {
+    console.error('conversation requires --id with a message or conversation id');
+    return 1;
+  }
+  const all = readAllMail();
+  const byId = new Map(all.map(message => [message.id, message]));
+  const target = byId.has(id) ? conversationOf(byId.get(id), byId) : id;
+  const messages = all
+    .filter(message => conversationOf(message, byId) === target)
+    .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+  if (!messages.length) {
+    console.error(`no messages in conversation ${id}`);
+    return 1;
+  }
+  if (hasFlag('json')) {
+    console.log(JSON.stringify({ conversationId: target, messages }, null, 2));
+    return 0;
+  }
+  console.log(`conversation ${target}  ${messages.length} message${messages.length === 1 ? '' : 's'}\n`);
+  for (const message of messages) {
+    const via = message.host ? `  via ${message.host.name}${message.host.model ? `/${message.host.model}` : ''}` : '';
+    const state = message.state ? `  [${message.state}]` : '';
+    console.log(`${message.createdAt}  ${message.from} -> ${message.to}  ${message.kind}${state}${via}`);
+    console.log(`  ${message.subject}`);
+    console.log(`  ${String(message.body).split('\n').join('\n  ')}\n`);
+  }
+  return 0;
+}
+
 function proposalPath(id) {
   return path.join(PROPOSAL_ROOT, `${id}.json`);
 }
@@ -631,6 +693,9 @@ function proposalPayload(proposal) {
     recipe: proposal.recipe,
     recipeDigest: proposal.recipeDigest,
     createdAt: proposal.createdAt,
+    // A follow-up is bound to the message it continues. Absent otherwise, so
+    // proposals without one keep the digest they always had.
+    ...(proposal.replyTo ? { replyTo: proposal.replyTo } : {}),
   };
 }
 
@@ -729,6 +794,7 @@ function trigger(repos) {
   const from = option('from');
   const exchangeId = option('exchange');
   const event = option('event') || 'manual';
+  const replyTo = option('reply-to');
   const subject = option('subject');
   const bodyFile = option('body-file');
   let body = option('body');
@@ -759,6 +825,15 @@ function trigger(repos) {
     console.error('trigger requires --subject');
     return 1;
   }
+  // A follow-up continues a message this repository received from the same
+  // repository it is asking, so a conversation cannot be joined from outside.
+  if (replyTo) {
+    const parent = safeMessageId(replyTo) ? findMessageById(replyTo) : null;
+    if (!parent || parent.to !== from || parent.from !== exchange.with) {
+      console.error(`--reply-to must name a message ${exchange.with} sent to ${from}`);
+      return 1;
+    }
+  }
   if (bodyFile) {
     try { body = fs.readFileSync(path.resolve(bodyFile), 'utf8'); }
     catch (err) { console.error(`could not read --body-file: ${err.message}`); return 1; }
@@ -784,6 +859,7 @@ function trigger(repos) {
     recipe: recipeSnapshot(exchange),
     recipeDigest: recipeDigest(recipeSnapshot(exchange)),
     createdAt,
+    ...(replyTo ? { replyTo } : {}),
   };
   proposal.payloadDigest = proposalDigest(proposal);
   writeJsonAtomic(proposalPath(id), proposal);
@@ -877,10 +953,12 @@ function approve(repos) {
     kind: 'request',
     subject: proposal.subject,
     body: proposal.body,
+    replyTo: proposal.replyTo || null,
     metadata: {
       proposalId: id,
       exchange: proposal.exchange,
       permission: currentRecipe.permission,
+      ...(currentRecipe.host ? { host: currentRecipe.host } : {}),
       recipeDigest: proposal.recipeDigest,
       approvedBy: 'local-operator',
     },
@@ -911,6 +989,15 @@ function deliverMessage(repos, input) {
   if (replyTo && !safeMessageId(replyTo)) return { ok: false, error: 'replyTo contains unsupported characters' };
   if (requestedConversationId && !safeConversationId(requestedConversationId)) return { ok: false, error: 'conversationId contains unsupported characters' };
   if (!body) return { ok: false, error: 'message requires a body' };
+  if (input.state && (kind !== 'response' || !RESPONSE_STATES.has(input.state))) {
+    return { ok: false, error: `state is only for responses and must be one of: ${[...RESPONSE_STATES].join(', ')}` };
+  }
+  if (input.host && !HOSTS.has(input.host.name)) {
+    return { ok: false, error: `host must be one of: ${[...HOSTS].join(', ')}` };
+  }
+  if (input.host?.model && !/^[A-Za-z0-9._:/-]{1,100}$/.test(input.host.model)) {
+    return { ok: false, error: 'host model contains unsupported characters' };
+  }
 
   const requestedId = input.id || null;
   if (requestedId && !safeMessageId(requestedId)) return { ok: false, error: 'message id contains unsupported characters' };
@@ -931,6 +1018,8 @@ function deliverMessage(repos, input) {
     body,
     createdAt,
     ...(replyTo ? { replyTo } : {}),
+    ...(input.state ? { state: input.state } : {}),
+    ...(input.host ? { host: input.host } : {}),
     ...(input.metadata ? { authorization: input.metadata } : {}),
   };
   const intent = writeDeliveryIntent(message);
@@ -957,6 +1046,9 @@ function send(repos) {
   const kind = option('kind') || 'notice';
   const replyTo = option('reply-to');
   const requestedConversationId = option('conversation-id');
+  const state = option('state');
+  const hostName = option('host');
+  const hostModel = option('model');
 
   if (!safeRepoId(from) || !safeRepoId(to)) {
     console.error('send requires safe --from and --to repo ids');
@@ -1002,6 +1094,8 @@ function send(repos) {
     kind,
     replyTo,
     conversationId: requestedConversationId,
+    state,
+    host: hostName ? { name: hostName, ...(hostModel ? { model: hostModel } : {}) } : null,
     id: process.env.REPOS_CHAT_AGENT_HOST === '1'
       ? process.env.REPOS_CHAT_INTERNAL_MESSAGE_ID || null
       : null,
@@ -1101,6 +1195,7 @@ function validateRequest(repos) {
   if (proposal.state !== 'approved' || proposal.messageId !== id
       || proposal.from !== message.from || proposal.to !== message.to
       || proposal.subject !== message.subject || proposal.body !== message.body
+      || (proposal.replyTo || null) !== (message.replyTo || null)
       || proposal.exchange !== message.authorization.exchange) {
     console.error(`request ${id} does not match its approved proposal`);
     return 1;
@@ -1286,17 +1381,22 @@ function help() {
   repos graph   --root DIR [--depth N]
   repos sync    --root DIR
   repos trigger --root DIR --from REPO --exchange ID --event EVENT --subject TEXT --body TEXT
+                [--reply-to MESSAGE_ID]   continue a conversation with a follow-up request
   repos proposals --root DIR [--repo REPO] [--json] [--all]
   repos approve --root DIR --id PROPOSAL_ID --approve PROPOSAL_ID:DIGEST_PREFIX
   repos send    --root DIR --from REPO --to REPO --kind response|notice --subject TEXT --body TEXT
+                [--reply-to ID] [--conversation-id ID] [--state STATE] [--host NAME --model MODEL]
   repos inbox   --root DIR --repo REPO [--json] [--all]
   repos ack     --root DIR --repo REPO --id MESSAGE_ID
   repos context --root DIR --repo REPO
+  repos conversation --root DIR --id MESSAGE_OR_CONVERSATION_ID [--json]
 
 An assigned Repo Rep has a valid repos.yaml identity and at least one local
 instruction file. A live watcher lease makes it proactive and observable.
 Recipe triggers create proposals, never messages. Only an exact approve command
-delivers proposed work. Use repos-agent watch --root DIR --repo REPO to keep it awake.`);
+delivers proposed work. Use repos-agent watch --root DIR --repo REPO to keep it awake,
+repos-agent hosts to see which models (codex, claude, grok) can answer, and
+repos-mcp --root DIR --as REPO to give a live agent session these as tools.`);
   return 0;
 }
 
@@ -1309,7 +1409,7 @@ if (!repos.length) {
   console.log(`no repos.yaml found under ${ROOT}`);
   process.exit(0);
 }
-if (!['send', 'inbox', 'ack', 'context', 'status', 'graph', 'trigger', 'proposals', 'approve', 'validate-request'].includes(cmd)) {
+if (!['send', 'inbox', 'ack', 'context', 'status', 'graph', 'trigger', 'proposals', 'approve', 'validate-request', 'conversation'].includes(cmd)) {
   console.log(`${C.d}${repos.length} manifests under ${ROOT}${C.x}\n`);
 }
 const code = cmd === 'sync' ? sync(repos)
@@ -1322,6 +1422,7 @@ const code = cmd === 'sync' ? sync(repos)
   : cmd === 'proposals' ? listProposals(repos)
   : cmd === 'approve' ? approve(repos)
   : cmd === 'context' ? context(repos)
+  : cmd === 'conversation' ? conversation()
   : cmd === 'status' ? status(repos)
   : verify(repos);
 process.exit(code);

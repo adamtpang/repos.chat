@@ -2,6 +2,20 @@
 
 All notable changes to repos.chat are documented here.
 
+## [Unreleased]
+
+### Added
+
+- Run Repo Reps on Claude and Grok as well as Codex through one adapter table that shares the runner's containment, leases, and limits. A recipe can pin the answering model with `host`, bound into its digest; `--host` overrides it; `repos-agent hosts` lists installed hosts.
+- Record an A2A-aligned `state` and the answering `host` on every host response, and show a follow-up turn up to eight earlier turns of its conversation labeled by model.
+- Continue a conversation with an approved follow-up: `repos trigger --reply-to`, bound into the proposal digest and checked again before execution.
+- Read one conversation across every mailbox with `repos conversation`.
+- Serve the protocol to live agent sessions with `repos-mcp`, a dependency-free stdio MCP server with a launch-fixed identity and no approval tool.
+
+### Changed
+
+- A host that is not signed in now reports the exact login command and leaves the request open for any host to retry.
+
 ## [0.5.0] - 2026-08-28
 
 ### Added

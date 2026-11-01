@@ -114,6 +114,13 @@ Presence records live under `.repo-connect/presence/`. They are operational arti
 
 Message kinds are `request`, `response`, and `notice`. A response uses `replyTo` and inherits the original `conversationId`. Acknowledgement adds a timestamp but does not delete the message.
 
+A response may also carry:
+
+- `state`, from the A2A task-state vocabulary: `completed`, `input-required`, `rejected`, `failed`, or `canceled`. Host responses map the completion outcome: `completed` to `completed`, `blocked` to `input-required`, `declined` to `rejected`. Requests and notices carry no state.
+- `host`, the model that answered, for example `{ "name": "grok" }` or `{ "name": "claude", "model": "opus" }`.
+
+An approved follow-up request carries `replyTo` too, bound into its proposal digest, and joins the conversation it continues. `repos conversation --id ID` returns every message in one conversation across all mailboxes. Messages written before `conversationId` existed resolve through their `replyTo` chain.
+
 Version 3 remains local-first. Messages are JSON files under the workspace root. Approved recipe requests carry proposal, exchange, permission, and recipe-digest metadata; the host revalidates that chain against the current manifest before invoking a model. There is no required account, server, network call, or model-provider dependency.
 
 ## Connection contract
@@ -143,6 +150,20 @@ A host adapter must:
 9. acknowledge the original message
 
 Codex, Claude, a CI job, or a local scheduler can implement this lifecycle. The protocol does not require a particular host.
+
+`repos-agent` implements it for three model CLIs through one adapter table in `hosts.mjs`. Spawning, process-tree containment, lease heartbeats, timeouts, and output limits are shared; only the invocation differs:
+
+| Host | Invocation | Without `branch-pr` |
+| --- | --- | --- |
+| `codex` | `codex exec --output-schema` | `--sandbox read-only` |
+| `claude` | `claude -p --json-schema --output-format json` | `--permission-mode plan` |
+| `grok` | `grok --prompt-file --json-schema --output-format json` | `--permission-mode plan` |
+
+The host is the operator's `--host`, else the approved recipe's `host`, else `codex`. A failed run, including a missing sign-in, leaves the request open for retry on any host and names the login command.
+
+## Live session contract
+
+`repos-mcp --root WORKSPACE --as REPO` is a stdio MCP server for an agent already running in Claude Code, Codex, Grok, or another MCP client. Its identity is fixed at launch. It exposes discovery, proposals, notices and responses, the inbox, conversations, and acknowledgement. It never approves a proposal and never returns the approval token or the digest it derives from, so the human gate applies to live agents as it does to the CLI.
 
 ## Trust and safety
 
@@ -190,7 +211,10 @@ The current implementation proves identity, presence, bounded work, declared col
 - durable local inboxes and conversation ids
 - acknowledgements and reply threading
 - machine-readable rep boot context
-- bounded Codex host adapter with repository and message locks
+- bounded host adapters for Codex, Claude, and Grok with repository and message locks, one completion contract, and conversation history for follow-ups
+- A2A-aligned response states and the answering model on every host response
+- approved follow-up requests that continue a conversation
+- `repos-mcp`, a stdio MCP server that gives live agent sessions the protocol under the same human gate
 - proactive watcher with verifiable local presence
 - structured completion responses with evidence, tests, and risks
 - localhost graph, presence, and conversation inspector
@@ -201,7 +225,6 @@ The current implementation proves identity, presence, bounded work, declared col
 
 ## Later, only if local use proves it
 
-- a Claude host adapter using the same completion contract
 - inbox priorities, deadlines, and cancellation events
 - signed remote relay for repositories that do not share a filesystem
 - policy capabilities describing which repositories may request which operations

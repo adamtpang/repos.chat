@@ -102,6 +102,8 @@ repos approve --root ~/projects --id PROPOSAL_ID --approve PROPOSAL_ID:DIGEST_PR
 
 `repos trigger` prints the exact content-bound confirmation. The ID plus digest prefix is the human authorization boundary, so changed proposal bytes require a new review. Before approval, nothing reaches the recipient inbox.
 
+To continue a conversation, propose a follow-up with `--reply-to RESPONSE_ID`. The follow-up must answer a message the recipient sent to the proposer, the reply target is covered by the approval digest, and the delivered request joins the original `conversationId`. Read a whole conversation, including which model answered each turn, with `repos conversation --id ID`.
+
 ## Send responses and notices
 
 Raw work requests are intentionally disabled; requests must use a declared recipe and the trigger/approve boundary. Reps and local tools can still write non-executable notices and threaded responses:
@@ -130,9 +132,11 @@ repos context --root ~/projects --repo metrics-service
 
 Messages are JSON files under `<root>/.repo-connect/mail/<repo>/`. They stay local unless the operator deliberately adds a remote transport.
 
-## Run or wake one bounded Repo Rep
+## Run or wake one bounded Repo Rep, on any model
 
-The included Codex host adapter locks one repository and one request, grants only the recipe-approved access to the recipient repository, requires structured evidence and test results, sends the result back through the mailbox, and acknowledges the request. Its observable child process tree is terminated before either lock is released. Interrupted requests remain open for at-least-once retry; result-addressed response IDs avoid retry collisions, and workspace claim files are audit records rather than proof that work completed.
+The host adapter runs Codex, Claude, or Grok. A recipe can pin the model with `host: codex|claude|grok`; the pin is part of the recipe digest, so it is approved along with the work. The operator's `--host` overrides it, and the default is Codex. Each CLI keeps its own sign-in. A response records the answering model and an A2A-aligned `state`, and a follow-up turn shows the model up to eight earlier turns of the conversation, labeled by model. `repos-agent hosts` lists installed hosts without starting one.
+
+The adapter locks one repository and one request, grants only the recipe-approved access to the recipient repository, requires structured evidence and test results, sends the result back through the mailbox, and acknowledges the request. Its observable child process tree is terminated before either lock is released. Interrupted requests remain open for at-least-once retry; result-addressed response IDs avoid retry collisions, and workspace claim files are audit records rather than proof that work completed.
 
 ```sh
 repos-agent run --root ~/projects --repo metrics-service --dry-run
@@ -147,7 +151,7 @@ repos-agent watch --root ~/projects --repo metrics-service
 
 The watcher refreshes `.repo-connect/presence/<repo>.json`, polls the inbox, and preserves one-worker and one-message locks. Use `--once` for a scheduled or CI check.
 
-Host tuning flags are `--model <name>`, `--timeout-minutes <positive>`, `--lock-ttl-minutes <minimum 1>`, and `--interval-seconds <positive>`. `repos-agent run` also accepts `--id <request-id>` to select one open request.
+Host tuning flags are `--host <codex|claude|grok>`, `--model <name>`, `--timeout-minutes <positive>`, `--lock-ttl-minutes <minimum 1>`, and `--interval-seconds <positive>`. `repos-agent run` also accepts `--id <request-id>` to select one open request.
 
 The current Node adapter is a bounded workflow host, not a kernel container. It cleans up observable descendants, including detached Windows children. Because a deliberately daemonized POSIX process can escape process-group cleanup, `branch-pr` host runs fail closed there; `read-only` and `propose-change` recipes remain available. Strong cgroup isolation is future host work.
 
@@ -162,6 +166,18 @@ repos-dashboard --root ~/projects
 Open `http://127.0.0.1:4777`. Every repository has a deterministic original pixel-art Repo Pet. The habitat distinguishes executable recipe routes from relationship-only edges and shows presence, proposals, conversations, recent local commits, and stored GitHub draft PRs. Add `?focus=repo-a,repo-b` to isolate a private subgraph. The inspector binds only to loopback and is separate from the public landing page.
 
 Use `repos-dashboard --port <port>` to choose another loopback port and `--focus repo-a,repo-b` to start with a filtered graph.
+
+## Talk from inside a live agent session
+
+`repos-mcp` gives any MCP client the protocol as tools, so an agent you are already working with can ask another Repo Rep for help and read the reply:
+
+```sh
+claude mcp add repos -- node /path/to/repos.chat/mcp.mjs --root ~/projects --as metrics-service
+codex mcp add repos -- node /path/to/repos.chat/mcp.mjs --root ~/projects --as metrics-service
+grok mcp add repos node -- /path/to/repos.chat/mcp.mjs --root ~/projects --as metrics-service
+```
+
+The session gets `repos_whoami`, `repos_graph`, `repos_propose`, `repos_proposals`, `repos_send`, `repos_inbox`, `repos_conversation`, and `repos_ack`. The identity is fixed at launch, undeclared arguments are refused, and the human gate holds: the agent can propose work but no tool approves it, and the approval token is not returned. That gate is procedural, not cryptographic; an agent with its own shell access to the workspace could still read the proposal file. [BRIDGES.md](BRIDGES.md) compares this with MCP Agent Mail, ACP, and CLI-to-CLI bridges.
 
 ## Optional GitHub App contribution
 
@@ -194,8 +210,11 @@ repos send     write a response or non-executable notice
 repos inbox    read open or acknowledged messages
 repos ack      acknowledge without deleting history
 repos context  assemble one agent's verified boot context
-repos-agent run    preview or handle one bounded request
+repos conversation  read one conversation across every mailbox
+repos-agent run    preview or handle one bounded request on codex, claude, or grok
 repos-agent watch  keep one Repo Rep awake and handling requests
+repos-agent hosts  list installed model hosts without starting one
+repos-mcp          serve the protocol to a live agent session over MCP
 repos-dashboard    inspect the local graph, presence, and conversations
 repos-github status  check GitHub App configuration without a network call
 repos-github plan    record reviewed files, hashes, tests, and base locally
@@ -229,6 +248,6 @@ A manifest that sends an agent to nonexistent code is worse than no manifest. Ca
 
 ## Status
 
-v0.5 implements the Repository Representation Protocol: manifest and recipe verification, four proposal trigger classes, exact human approval, live watcher leases, conversation ids, canon drift checks, graph export, local mail, machine-readable context, a bounded Codex host adapter, an original pixel-pet localhost habitat, Git/PR visibility, a guarded GitHub App draft-PR adapter, and installable Repo Rep and GitHub-star-matching skills.
+v0.5 implements the Repository Representation Protocol: manifest and recipe verification, four proposal trigger classes, exact human approval, live watcher leases, conversation ids, canon drift checks, graph export, local mail, machine-readable context, bounded host adapters for Codex, Claude, and Grok, an MCP server for live sessions, an original pixel-pet localhost habitat, Git/PR visibility, a guarded GitHub App draft-PR adapter, and installable Repo Rep and GitHub-star-matching skills.
 
 MIT.

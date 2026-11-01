@@ -7,16 +7,20 @@
     "repos": "./repos.mjs",
     "repos-agent": "./agent-host.mjs",
     "repos-dashboard": "./dashboard.mjs",
-    "repos-github": "./github-app.mjs"
+    "repos-github": "./github-app.mjs",
+    "repos-mcp": "./mcp.mjs"
   },
   "files": [
     "repos.mjs",
     "agent-host.mjs",
+    "hosts.mjs",
+    "mcp.mjs",
     "dashboard.mjs",
     "github-app.mjs",
     "AGENT_PROTOCOL.md",
     "GITHUB_APP.md",
     "PROTOCOL_RESEARCH.md",
+    "BRIDGES.md",
     "CHANGELOG.md",
     "README.md",
     "skills"
@@ -25,7 +29,8 @@
     "test": "node --test",
     "agent": "node agent-host.mjs run",
     "watch": "node agent-host.mjs watch",
-    "dashboard": "node dashboard.mjs"
+    "dashboard": "node dashboard.mjs",
+    "mcp": "node mcp.mjs"
   },
   "engines": {
     "node": ">=18"
@@ -43,7 +48,11 @@
     "repositories",
     "multi-agent",
     "codex",
-    "local-first"
+    "local-first",
+    "claude",
+    "grok",
+    "mcp",
+    "agent-to-agent"
   ],
   "author": "Adam Pang",
   "license": "MIT"
