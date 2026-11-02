@@ -161,6 +161,18 @@ Codex, Claude, a CI job, or a local scheduler can implement this lifecycle. The 
 
 The host is the operator's `--host`, else the approved recipe's `host`, else `codex`. A failed run, including a missing sign-in, leaves the request open for retry on any host and names the login command.
 
+## Delivery contract
+
+A message has three separate states for its sender:
+
+1. **queued**: it is in the recipient's mailbox and no live session has seen it
+2. **seen**: a delivery hook injected it into a live agent session in the recipient repository, recorded as `.repo-connect/receipts/<repo>/<messageId>/<host>-<session>.json`
+3. **acked**: the recipient marked it handled with `acknowledgedAt`
+
+Seen never implies acked, and an agent must report a queued message as not seen yet. Receipts are append-only files created exclusively, one per host session, so concurrent sessions never race and the same file proves a session already saw the message. A message may carry `expiresAt`; expired messages stay in history and in `repos inbox`, flagged, but delivery hooks stop pushing them. Messages open longer than seven days (`--stale-days N`) are flagged as stale by `repos inbox`, `repos sent`, and `repos focus`.
+
+A delivery hook must exit successfully on every path, print nothing when nothing is new, read only its own repository's mailbox, and fence every relayed body as untrusted data that cannot close its own fence. `inbox-hook.mjs` implements this for Claude Code's `UserPromptSubmit` and `SessionStart` events.
+
 ## Live session contract
 
 `repos-mcp --root WORKSPACE --as REPO` is a stdio MCP server for an agent already running in Claude Code, Codex, Grok, or another MCP client. Its identity is fixed at launch. It exposes discovery, proposals, notices and responses, the inbox, conversations, and acknowledgement. It never approves a proposal and never returns the approval token or the digest it derives from, so the human gate applies to live agents as it does to the CLI.
@@ -215,6 +227,8 @@ The current implementation proves identity, presence, bounded work, declared col
 - A2A-aligned response states and the answering model on every host response
 - approved follow-up requests that continue a conversation
 - `repos-mcp`, a stdio MCP server that gives live agent sessions the protocol under the same human gate
+- Claude Code delivery hook with once-per-session injection and persistent `seen` receipts
+- sender delivery view (`repos sent`), optional `expiresAt`, stale flags, and workspace triage (`repos focus`)
 - proactive watcher with verifiable local presence
 - structured completion responses with evidence, tests, and risks
 - localhost graph, presence, and conversation inspector

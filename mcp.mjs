@@ -176,11 +176,25 @@ const TOOLS = [
       const kind = str(input, 'kind') || 'notice';
       if (!['notice', 'response'].includes(kind)) throw new ToolError('kind must be notice or response; use repos_propose to ask for work');
       const replyTo = str(input, 'reply_to');
-      return withBodyFile(body, file => cliJson(
+      const { message, delivery } = withBodyFile(body, file => cliJson(
         'send', '--from', self, '--to', to, '--kind', kind, '--subject', subject, '--body-file', file,
         ...(replyTo ? ['--reply-to', replyTo] : []),
-      )).message;
+      ));
+      // A new message is queued, not delivered. Say so, so the agent does not
+      // tell its user the other side has read it.
+      return { ...message, delivery: { status: delivery.status, label: delivery.label } };
     },
+  },
+  {
+    name: 'repos_sent',
+    description: 'Show messages this repository sent, newest first, and whether each one is queued (no live session has seen it), seen by a live agent session, or acked as handled. Report this status honestly; never say a message was read when it is only queued.',
+    inputSchema: {
+      type: 'object',
+      properties: { include_all: { type: 'boolean', default: false } },
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: true },
+    call: input => cliJson('sent', '--repo', self, '--json', ...(input?.include_all ? ['--all'] : [])),
   },
   {
     name: 'repos_inbox',

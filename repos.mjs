@@ -14,6 +14,10 @@
 //   node repos.mjs proposals [options]   list pending or historical proposals
 //   node repos.mjs approve [options]     explicitly approve and deliver one proposal
 //   node repos.mjs conversation [options] read one conversation across every mailbox
+//   node repos.mjs sent   [options]      show what one repo sent and whether it was seen or acked
+//   node repos.mjs focus  [options]      count open, unseen, stale, and expired messages
+//   node repos.mjs hook claude [options] deliver new messages into live Claude Code sessions
+//   node repos.mjs mcp install [options] add repos-mcp to a Claude Code project
 //
 // Why this exists: a manifest that points an agent at code which does not exist is
 // worse than no manifest at all. Claims rot silently. This makes them fail loudly.
@@ -21,7 +25,11 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
-import { execFileSync } from 'child_process';
+import { execFileSync, spawnSync } from 'child_process';
+import { fileURLToPath } from 'url';
+import { STALE_DAYS, deliveryStatus, freshness, parseDuration, readSeen } from './receipts.mjs';
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 const args = process.argv.slice(2);
 const cmd = args[0] || 'verify';
@@ -476,7 +484,7 @@ function deliveryPath(to, id) {
 }
 
 function sameMessage(left, right) {
-  return ['id', 'from', 'to', 'kind', 'subject', 'body', 'replyTo', 'conversationId', 'state']
+  return ['id', 'from', 'to', 'kind', 'subject', 'body', 'replyTo', 'conversationId', 'state', 'expiresAt']
     .every(key => (left?.[key] ?? null) === (right?.[key] ?? null))
     && JSON.stringify(left?.authorization || null) === JSON.stringify(right?.authorization || null)
     && JSON.stringify(left?.host || null) === JSON.stringify(right?.host || null);
@@ -657,14 +665,14 @@ function conversation() {
     return 1;
   }
   if (hasFlag('json')) {
-    console.log(JSON.stringify({ conversationId: target, messages }, null, 2));
+    console.log(JSON.stringify({ conversationId: target, messages: messages.map(message => ({ ...message, delivery: deliveryStatus(ROOT, message) })) }, null, 2));
     return 0;
   }
   console.log(`conversation ${target}  ${messages.length} message${messages.length === 1 ? '' : 's'}\n`);
   for (const message of messages) {
     const via = message.host ? `  via ${message.host.name}${message.host.model ? `/${message.host.model}` : ''}` : '';
     const state = message.state ? `  [${message.state}]` : '';
-    console.log(`${message.createdAt}  ${message.from} -> ${message.to}  ${message.kind}${state}${via}`);
+    console.log(`${message.createdAt}  ${message.from} -> ${message.to}  ${message.kind}${state}${via}  (${deliveryStatus(ROOT, message).label})`);
     console.log(`  ${message.subject}`);
     console.log(`  ${String(message.body).split('\n').join('\n  ')}\n`);
   }
@@ -992,6 +1000,11 @@ function deliverMessage(repos, input) {
   if (input.state && (kind !== 'response' || !RESPONSE_STATES.has(input.state))) {
     return { ok: false, error: `state is only for responses and must be one of: ${[...RESPONSE_STATES].join(', ')}` };
   }
+  if (input.expiresAt !== undefined && input.expiresAt !== null) {
+    const expires = Date.parse(input.expiresAt);
+    if (!Number.isFinite(expires)) return { ok: false, error: 'expiresAt must be an ISO 8601 time' };
+    if (expires <= Date.now()) return { ok: false, error: 'expiresAt is already in the past' };
+  }
   if (input.host && !HOSTS.has(input.host.name)) {
     return { ok: false, error: `host must be one of: ${[...HOSTS].join(', ')}` };
   }
@@ -1020,6 +1033,7 @@ function deliverMessage(repos, input) {
     ...(replyTo ? { replyTo } : {}),
     ...(input.state ? { state: input.state } : {}),
     ...(input.host ? { host: input.host } : {}),
+    ...(input.expiresAt ? { expiresAt: new Date(input.expiresAt).toISOString() } : {}),
     ...(input.metadata ? { authorization: input.metadata } : {}),
   };
   const intent = writeDeliveryIntent(message);
@@ -1049,6 +1063,16 @@ function send(repos) {
   const state = option('state');
   const hostName = option('host');
   const hostModel = option('model');
+  const expiresIn = option('expires-in');
+  let expiresAt = option('expires-at');
+  if (expiresIn) {
+    const ms = parseDuration(expiresIn);
+    if (!ms) {
+      console.error('send --expires-in takes a duration such as 30m, 48h, 7d, or 2w');
+      return 1;
+    }
+    expiresAt = new Date(Date.now() + ms).toISOString();
+  }
 
   if (!safeRepoId(from) || !safeRepoId(to)) {
     console.error('send requires safe --from and --to repo ids');
@@ -1096,6 +1120,7 @@ function send(repos) {
     conversationId: requestedConversationId,
     state,
     host: hostName ? { name: hostName, ...(hostModel ? { model: hostModel } : {}) } : null,
+    expiresAt,
     id: process.env.REPOS_CHAT_AGENT_HOST === '1'
       ? process.env.REPOS_CHAT_INTERNAL_MESSAGE_ID || null
       : null,
@@ -1104,7 +1129,9 @@ function send(repos) {
     console.error(delivered.error);
     return 1;
   }
-  console.log(JSON.stringify(delivered, null, 2));
+  // Report delivery truthfully: a fresh message is queued, not seen.
+  const delivery = deliveryStatus(ROOT, delivered.message);
+  console.log(JSON.stringify({ ...delivered, delivery: { ...delivery, check: `repos sent --root ${ROOT} --repo ${from}` } }, null, 2));
   return 0;
 }
 
@@ -1114,9 +1141,19 @@ function inbox(repos) {
     console.error('inbox requires --repo matching a verified manifest');
     return 1;
   }
+  const staleDays = staleDaysOption();
+  if (staleDays === null) return 1;
   const messages = readInbox(repo, hasFlag('all'));
   if (hasFlag('json')) {
-    console.log(JSON.stringify({ repo, messages }, null, 2));
+    console.log(JSON.stringify({
+      repo,
+      staleDays,
+      messages: messages.map(message => ({
+        ...message,
+        flags: freshness(message, { staleDays }),
+        seen: readSeen(ROOT, repo, message.id),
+      })),
+    }, null, 2));
     return 0;
   }
   if (!messages.length) {
@@ -1125,9 +1162,228 @@ function inbox(repos) {
   }
   for (const message of messages) {
     const state = message.acknowledgedAt ? 'acknowledged' : 'open';
-    console.log(`${message.id}  ${message.kind}  ${state}  from ${message.from}`);
+    const { stale, expired, openDays } = freshness(message, { staleDays });
+    const flag = expired ? `  ${C.r}EXPIRED${C.x}` : stale ? `  ${C.y}STALE ${openDays}d${C.x}` : '';
+    console.log(`${message.id}  ${message.kind}  ${state}  from ${message.from}${flag}`);
     console.log(`    ${message.subject}`);
   }
+  return 0;
+}
+
+function staleDaysOption() {
+  const raw = option('stale-days');
+  if (raw === null) return STALE_DAYS;
+  const days = Number(raw);
+  if (!Number.isInteger(days) || days < 1) {
+    console.error('--stale-days must be a whole number of at least 1');
+    return null;
+  }
+  return days;
+}
+
+// The sender's view: every message one repository sent, newest first, with
+// whether a live session has seen it and whether the recipient acked it.
+function sentMessages(repos) {
+  const repo = option('repo');
+  if (!safeRepoId(repo) || !findRepo(repos, repo)) {
+    console.error('sent requires --repo matching a verified manifest');
+    return 1;
+  }
+  const staleDays = staleDaysOption();
+  if (staleDays === null) return 1;
+  const all = readAllMail()
+    .filter(message => message.from === repo)
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+  const shown = hasFlag('all') ? all : all.slice(0, 20);
+  const rows = shown.map(message => ({
+    id: message.id,
+    to: message.to,
+    kind: message.kind,
+    subject: message.subject,
+    createdAt: message.createdAt,
+    ...(message.expiresAt ? { expiresAt: message.expiresAt } : {}),
+    delivery: deliveryStatus(ROOT, message, { staleDays }),
+  }));
+  if (hasFlag('json')) {
+    console.log(JSON.stringify({ repo, total: all.length, messages: rows }, null, 2));
+    return 0;
+  }
+  if (!rows.length) {
+    console.log(`${repo} has sent no messages`);
+    return 0;
+  }
+  for (const row of rows) {
+    const colour = row.delivery.status === 'acked' ? C.g : row.delivery.status === 'seen' ? C.y : C.d;
+    console.log(`${row.id}  -> ${row.to}  ${row.kind}  ${colour}${row.delivery.label}${C.x}`);
+    console.log(`    ${row.subject}`);
+  }
+  if (all.length > rows.length) console.log(`\n${all.length - rows.length} older; add --all to list them`);
+  return 0;
+}
+
+// Workspace triage: which mailboxes hold open work, how much of it nobody has
+// seen, and which messages are old enough to close or re-send.
+function focus(repos) {
+  const only = option('repo');
+  if (only && (!safeRepoId(only) || !findRepo(repos, only))) {
+    console.error('focus --repo must match a verified manifest');
+    return 1;
+  }
+  const staleDays = staleDaysOption();
+  if (staleDays === null) return 1;
+  let boxes = [];
+  try { boxes = fs.readdirSync(MAIL_ROOT, { withFileTypes: true }).filter(e => e.isDirectory() && safeRepoId(e.name)).map(e => e.name); }
+  catch {}
+  if (only) boxes = boxes.filter(box => box === only);
+  const rows = [];
+  for (const box of boxes) {
+    const open = readInbox(box);
+    if (!open.length) continue;
+    const details = open.map(message => ({ message, ...freshness(message, { staleDays }), seen: readSeen(ROOT, box, message.id).length > 0 }));
+    rows.push({
+      repo: box,
+      open: open.length,
+      unseen: details.filter(item => !item.seen).length,
+      stale: details.filter(item => item.stale).length,
+      expired: details.filter(item => item.expired).length,
+      oldestDays: Math.max(...details.map(item => item.openDays ?? 0)),
+      attention: details
+        .filter(item => item.stale || item.expired)
+        .map(item => ({ id: item.message.id, from: item.message.from, kind: item.message.kind, subject: item.message.subject, openDays: item.openDays, expired: item.expired })),
+    });
+  }
+  rows.sort((a, b) => b.stale + b.expired - (a.stale + a.expired) || b.open - a.open || a.repo.localeCompare(b.repo));
+  const totals = rows.reduce((sum, row) => ({
+    open: sum.open + row.open, unseen: sum.unseen + row.unseen, stale: sum.stale + row.stale, expired: sum.expired + row.expired,
+  }), { open: 0, unseen: 0, stale: 0, expired: 0 });
+  if (hasFlag('json')) {
+    console.log(JSON.stringify({ staleDays, totals, repos: rows }, null, 2));
+    return 0;
+  }
+  if (!rows.length) {
+    console.log(only ? `no open messages for ${only}` : 'no open messages in this workspace');
+    return 0;
+  }
+  console.log(`${totals.open} open across ${rows.length} repo${rows.length === 1 ? '' : 's'}: ${totals.unseen} never seen, ${totals.stale} open ${staleDays}+ days, ${totals.expired} expired\n`);
+  for (const row of rows) {
+    const parts = [`${row.open} open`, `${row.unseen} unseen`];
+    if (row.stale) parts.push(`${C.y}${row.stale} stale${C.x}`);
+    if (row.expired) parts.push(`${C.r}${row.expired} expired${C.x}`);
+    console.log(`${row.repo}  ${parts.join(', ')}`);
+    for (const item of row.attention) {
+      console.log(`    ${item.expired ? 'EXPIRED' : `${item.openDays}d`}  ${item.id}  ${item.kind} from ${item.from}: ${item.subject}`);
+    }
+  }
+  if (totals.stale || totals.expired) console.log('\nClose each with repos ack, or re-send it if the work is still needed.');
+  return 0;
+}
+
+const slash = value => String(value).replace(/\\/g, '/');
+const OUR_HOOK = 'inbox-hook.mjs';
+
+function readJsonFile(file) {
+  if (!fs.existsSync(file)) return {};
+  const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error(`${file} is not a JSON object`);
+  return parsed;
+}
+
+// Installs or removes the session delivery hook. Defaults to the private
+// settings.local.json because the command holds absolute local paths;
+// --shared writes the committed settings.json instead.
+function installClaudeHook(repos) {
+  if (args[1] !== 'claude') {
+    console.error('usage: repos hook claude --root DIR --repo REPO [--shared] [--remove]');
+    return 1;
+  }
+  const id = option('repo');
+  const current = safeRepoId(id) ? findRepo(repos, id) : null;
+  if (!current) {
+    console.error('hook requires --repo matching a verified manifest');
+    return 1;
+  }
+  const shared = hasFlag('shared');
+  const remove = hasFlag('remove');
+  const file = path.join(current.dir, '.claude', shared ? 'settings.json' : 'settings.local.json');
+  let settings;
+  try { settings = readJsonFile(file); }
+  catch (err) {
+    console.error(`refusing to overwrite unreadable settings: ${err.message}`);
+    return 1;
+  }
+  const command = event => `node "${slash(path.join(HERE, OUR_HOOK))}" --root "${slash(path.resolve(ROOT))}" --repo ${repoId(current)} --event ${event}`;
+  settings.hooks = settings.hooks && typeof settings.hooks === 'object' ? settings.hooks : {};
+  for (const event of ['UserPromptSubmit', 'SessionStart']) {
+    // Drop only entries that run this hook, so other hooks are untouched and
+    // reinstalling never duplicates.
+    const groups = (Array.isArray(settings.hooks[event]) ? settings.hooks[event] : [])
+      .map(group => ({ ...group, hooks: (group.hooks || []).filter(hook => !String(hook.command || '').includes(OUR_HOOK)) }))
+      .filter(group => group.hooks.length);
+    if (!remove) {
+      groups.push({
+        ...(event === 'SessionStart' ? { matcher: 'startup|resume|clear|compact' } : {}),
+        hooks: [{ type: 'command', command: command(event), timeout: 5 }],
+      });
+    }
+    if (groups.length) settings.hooks[event] = groups;
+    else delete settings.hooks[event];
+  }
+  if (!Object.keys(settings.hooks).length) delete settings.hooks;
+  writeJsonAtomic(file, settings);
+  console.log(JSON.stringify({
+    ok: true,
+    repo: repoId(current),
+    file,
+    installed: !remove,
+    events: remove ? [] : ['UserPromptSubmit', 'SessionStart'],
+    note: remove
+      ? 'Session delivery removed.'
+      : `New messages to ${repoId(current)} now appear in the next prompt of any Claude Code session in that repository.${shared ? ' This file is shared: the command contains absolute local paths, so check before committing it.' : ''}`,
+  }, null, 2));
+  return 0;
+}
+
+// Adds repos-mcp to one Claude Code project so a live session can reply, ack,
+// and propose without shelling out. Local scope by default (private to this
+// machine, through the claude CLI); --shared writes the project .mcp.json.
+function installMcp(repos) {
+  if (args[1] !== 'install') {
+    console.error('usage: repos mcp install --root DIR --repo REPO [--shared]');
+    return 1;
+  }
+  const id = option('repo');
+  const current = safeRepoId(id) ? findRepo(repos, id) : null;
+  if (!current) {
+    console.error('mcp install requires --repo matching a verified manifest');
+    return 1;
+  }
+  const server = { command: 'node', args: [slash(path.join(HERE, 'mcp.mjs')), '--root', slash(path.resolve(ROOT)), '--as', repoId(current)] };
+  if (hasFlag('shared')) {
+    const file = path.join(current.dir, '.mcp.json');
+    let config;
+    try { config = readJsonFile(file); }
+    catch (err) {
+      console.error(`refusing to overwrite unreadable .mcp.json: ${err.message}`);
+      return 1;
+    }
+    config.mcpServers = { ...(config.mcpServers || {}), repos: server };
+    writeJsonAtomic(file, config);
+    console.log(JSON.stringify({ ok: true, repo: repoId(current), scope: 'project', file, note: 'The entry contains absolute local paths; check before committing .mcp.json.' }, null, 2));
+    return 0;
+  }
+  const bin = process.env.REPOS_CLAUDE_BIN || 'claude';
+  let prefix = [];
+  try { prefix = process.env.REPOS_CLAUDE_BIN_ARGS ? JSON.parse(process.env.REPOS_CLAUDE_BIN_ARGS) : []; } catch {}
+  const claude = cliArgs => spawnSync(bin, [...prefix, ...cliArgs], { cwd: current.dir, encoding: 'utf8', windowsHide: true, shell: false, timeout: 60000 });
+  const manual = `cd "${current.dir}" && claude mcp add --scope local repos -- ${server.command} ${server.args.map(arg => `"${arg}"`).join(' ')}`;
+  // Replace any earlier entry so the identity and paths stay current.
+  claude(['mcp', 'remove', '--scope', 'local', 'repos']);
+  const added = claude(['mcp', 'add', '--scope', 'local', 'repos', '--', server.command, ...server.args]);
+  if (added.error || added.status !== 0) {
+    console.error(`could not run the claude CLI (${added.error ? added.error.message : `exit ${added.status}`}). Run this yourself:\n${manual}`);
+    return 1;
+  }
+  console.log(JSON.stringify({ ok: true, repo: repoId(current), scope: 'local', server, note: 'Restart or reload the Claude Code session in that repository to load the repos tools.' }, null, 2));
   return 0;
 }
 
@@ -1390,6 +1646,13 @@ function help() {
   repos ack     --root DIR --repo REPO --id MESSAGE_ID
   repos context --root DIR --repo REPO
   repos conversation --root DIR --id MESSAGE_OR_CONVERSATION_ID [--json]
+  repos sent    --root DIR --repo REPO [--json] [--all]   queued, seen, or acked
+  repos focus   --root DIR [--repo REPO] [--stale-days N] [--json]
+  repos hook claude --root DIR --repo REPO [--shared] [--remove]
+  repos mcp install --root DIR --repo REPO [--shared]
+
+send also takes --expires-in 7d or --expires-at ISO_TIME. inbox, sent, and
+focus flag messages open 7+ days (--stale-days N) and expired ones.
 
 An assigned Repo Rep has a valid repos.yaml identity and at least one local
 instruction file. A live watcher lease makes it proactive and observable.
@@ -1409,7 +1672,7 @@ if (!repos.length) {
   console.log(`no repos.yaml found under ${ROOT}`);
   process.exit(0);
 }
-if (!['send', 'inbox', 'ack', 'context', 'status', 'graph', 'trigger', 'proposals', 'approve', 'validate-request', 'conversation'].includes(cmd)) {
+if (!['send', 'inbox', 'ack', 'context', 'status', 'graph', 'trigger', 'proposals', 'approve', 'validate-request', 'conversation', 'sent', 'focus', 'hook', 'mcp'].includes(cmd)) {
   console.log(`${C.d}${repos.length} manifests under ${ROOT}${C.x}\n`);
 }
 const code = cmd === 'sync' ? sync(repos)
@@ -1423,6 +1686,10 @@ const code = cmd === 'sync' ? sync(repos)
   : cmd === 'approve' ? approve(repos)
   : cmd === 'context' ? context(repos)
   : cmd === 'conversation' ? conversation()
+  : cmd === 'sent' ? sentMessages(repos)
+  : cmd === 'focus' ? focus(repos)
+  : cmd === 'hook' ? installClaudeHook(repos)
+  : cmd === 'mcp' ? installMcp(repos)
   : cmd === 'status' ? status(repos)
   : verify(repos);
 process.exit(code);

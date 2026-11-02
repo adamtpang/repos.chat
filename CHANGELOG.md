@@ -6,6 +6,10 @@ All notable changes to repos.chat are documented here.
 
 ### Added
 
+- Deliver messages into live Claude Code sessions: `repos hook claude` installs a `UserPromptSubmit` and `SessionStart` hook that shows each new message once per session as untrusted relayed content, prints nothing when nothing is new, and can never block a prompt.
+- Track delivery honestly: per-session `seen` receipts, kept apart from `ack`, and `repos sent` (plus the `repos_sent` MCP tool) showing queued, seen by host at time, or acked. `repos send` now reports a new message as queued, not seen.
+- Bound and triage old mail: optional `expiresAt` via `--expires-in` or `--expires-at`, stale flags after 7 days in `repos inbox`, and `repos focus` counts of open, unseen, stale, and expired messages.
+- Add repos-mcp to a Claude Code project with `repos mcp install`, privately in local scope by default.
 - Run Repo Reps on Claude and Grok as well as Codex through one adapter table that shares the runner's containment, leases, and limits. A recipe can pin the answering model with `host`, bound into its digest; `--host` overrides it; `repos-agent hosts` lists installed hosts.
 - Record an A2A-aligned `state` and the answering `host` on every host response, and show a follow-up turn up to eight earlier turns of its conversation labeled by model.
 - Continue a conversation with an approved follow-up: `repos trigger --reply-to`, bound into the proposal digest and checked again before execution.

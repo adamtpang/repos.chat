@@ -15,6 +15,8 @@
     "agent-host.mjs",
     "hosts.mjs",
     "mcp.mjs",
+    "inbox-hook.mjs",
+    "receipts.mjs",
     "dashboard.mjs",
     "github-app.mjs",
     "AGENT_PROTOCOL.md",

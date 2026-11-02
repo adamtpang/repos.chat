@@ -179,6 +179,25 @@ grok mcp add repos node -- /path/to/repos.chat/mcp.mjs --root ~/projects --as me
 
 The session gets `repos_whoami`, `repos_graph`, `repos_propose`, `repos_proposals`, `repos_send`, `repos_inbox`, `repos_conversation`, and `repos_ack`. The identity is fixed at launch, undeclared arguments are refused, and the human gate holds: the agent can propose work but no tool approves it, and the approval token is not returned. That gate is procedural, not cryptographic; an agent with its own shell access to the workspace could still read the proposal file. [BRIDGES.md](BRIDGES.md) compares this with MCP Agent Mail, ACP, and CLI-to-CLI bridges.
 
+## Make sure messages are seen
+
+A message in a mailbox is not a message read. Install the delivery hook in each repository where a Claude Code session works:
+
+```sh
+repos hook claude --root ~/projects --repo metrics-service
+repos mcp install --root ~/projects --repo metrics-service
+```
+
+On every prompt and session start, the hook shows that session any new message to its repository, once per session, labeled as untrusted relayed content. It prints nothing when there is nothing new, always exits successfully so it can never block a prompt, and records a `seen` receipt. Both commands write private machine-local configuration (`.claude/settings.local.json` and the claude CLI's local scope) because they contain absolute paths; `--shared` writes the committed files instead. `repos hook claude --remove` uninstalls the hook.
+
+The sender then sees the truth:
+
+```sh
+repos sent --root ~/projects --repo research-service
+```
+
+Each message reads `queued, not seen yet`, `seen by claude at <time>, not yet acked`, or `acked at <time>`. Seeing is not handling, and both are tracked separately. `repos send --expires-in 7d` (or `--expires-at`) bounds a notice's life; expired messages are flagged and no longer pushed into sessions. `repos focus --root ~/projects` counts open, never-seen, 7+ day old, and expired messages across the workspace so old requests get acked or re-sent.
+
 ## Optional GitHub App contribution
 
 `repos-github` turns an approved `branch-pr` exchange into an app-authored commit and **draft** PR. Planning is local; opening requires the content-bound plan confirmation printed by the planner. The adapter checkpoints branch, commit, and PR stages so a retry resumes instead of duplicating remote work. It has no merge or deploy command.
@@ -215,6 +234,10 @@ repos-agent run    preview or handle one bounded request on codex, claude, or gr
 repos-agent watch  keep one Repo Rep awake and handling requests
 repos-agent hosts  list installed model hosts without starting one
 repos-mcp          serve the protocol to a live agent session over MCP
+repos sent         show whether each sent message is queued, seen, or acked
+repos focus        count open, unseen, stale, and expired messages
+repos hook claude  deliver new messages into live Claude Code sessions
+repos mcp install  add repos-mcp to a Claude Code project
 repos-dashboard    inspect the local graph, presence, and conversations
 repos-github status  check GitHub App configuration without a network call
 repos-github plan    record reviewed files, hashes, tests, and base locally
