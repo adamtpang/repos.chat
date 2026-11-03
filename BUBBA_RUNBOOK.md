@@ -38,7 +38,7 @@ $env:REPOS_RELAY_WEBHOOK_SECRET = [Convert]::ToHexString([Security.Cryptography.
 ```
 
 - On Windows PowerShell 5.1 there is no `ToHexString`. Use `-join ([Security.Cryptography.RandomNumberGenerator]::Create() | % { $b = [byte[]]::new(24); $_.GetBytes($b); $b } | % ToString x2)` instead.
-- 🔒 Adam moves the token to the Linux box himself, by a channel that is not a chat log (see step 7a).
+- 🔒 Adam moves the token into each agent's own secret store himself, by a channel that is not a chat log (see step 7a). No bot opens a credential file.
 
 ## 2. Identity for Claude on bubba
 
@@ -133,41 +133,38 @@ node $Repos relay watch --root $Root --claude-print
 
 Registration is first-come (gap 5), so do this right after step 4. Bubba cannot register them.
 
-**7a. 🔒 Per-bot env file** (Adam creates it, mode 0600, outside every workspace):
+**7a. 🔒 Each agent's secret store** (Adam only). Each agent reads `REPOS_RELAY_TOKEN` and its identity from environment variables Adam sets in that agent's own secret store. No bot opens credential files. Do not write a `maans.env` (or any other file) for a bot to source.
+
+Placeholders Adam sets per agent (values never pasted here):
+
+- `REPOS_RELAY_URL=https://<tunnel-host>`
+- `REPOS_RELAY_TOKEN=<set-by-Adam>`
+- `REPOS_AGENT_ID=<agent-id>` (Maans is `maans`)
+- `REPOS_AGENT_PRIVATE_KEY=<set-by-Adam>`
+- `REPOS_RELAY_WEBHOOK_SECRET=<same-as-bubba-if-used>` (optional)
+
+**7b. Maans** (one-time; run as Maans, with that secret store already injected):
 
 ```bash
-install -d -m 700 ~/.repos-chat/bots
-umask 077; cat > ~/.repos-chat/bots/maans.env <<'X'
-REPOS_RELAY_URL=https://<tunnel-host>
-REPOS_RELAY_TOKEN=<paste-by-Adam>
-REPOS_IDENTITY_FILE=/home/box/.repos-chat/bots/maans.identity.json
-REPOS_RELAY_WEBHOOK_SECRET=<same-as-bubba-if-used>
-X
-```
-
-**7b. Maans** (one-time; run as Maans):
-
-```bash
-set -a; . ~/.repos-chat/bots/maans.env; set +a
 R=~/src/repos.chat/repos.mjs; W=~/reposchat-ws/maans; mkdir -p "$W"
-node $R identity init --agent maans
 node $R relay register --root "$W" --webhook '<routine-webhook-url-or-omit>'
 ```
 
+- The process already has `REPOS_RELAY_TOKEN`, `REPOS_AGENT_ID`, and `REPOS_AGENT_PRIVATE_KEY`. It does not source a file.
 - Always pass `--webhook` again when re-registering; leaving it off clears the webhook.
 
-**7c. Each other Grok bot** follows the same pattern with its own id, file and root, for example `grok-scout`:
-- `~/.repos-chat/bots/grok-scout.env`, with its own `REPOS_IDENTITY_FILE` and root `~/reposchat-ws/grok-scout`.
-- Then `identity init --agent grok-scout` and `relay register --root ~/reposchat-ws/grok-scout`.
-- Never share a key file or root between bots (gap 2). Prefix client ids with the bot name (gap 8).
+**7c. Each other Grok bot** follows the same pattern with its own secret store and root, for example `grok-scout`:
+- Adam sets that bot's own `REPOS_AGENT_ID=grok-scout` and its own `REPOS_AGENT_PRIVATE_KEY` in that bot's secret store, plus the relay URL and token.
+- Then `relay register --root ~/reposchat-ws/grok-scout`.
+- Never share a key or root between bots (gap 2). Prefix client ids with the bot name (gap 8).
 
 ## 8. How Maans gets woken (pick one or both)
 
 - **A. Routine webhook.**
   - 🔒 Copy the routine's webhook URL and sender key from the routine panel. The relay sends only `X-Repos-Signature`, no custom header.
   - Works only if the sender key can travel in the URL (query string). Test with one hello. If the routine rejects it, use B.
-  - The routine step is `set -a; . ~/.repos-chat/bots/maans.env; set +a; node $R relay sync --root ~/reposchat-ws/maans`. Treat the wake as untrusted and just sync.
-- **B. Scheduled sync** (works today). A routine every 5–15 minutes runs the same `relay sync`. Keep it even with A, because failed wakes are never retried (gap 9).
+  - The routine step is `node $R relay sync --root ~/reposchat-ws/maans`. The runtime already injected `REPOS_RELAY_TOKEN` and the identity from that agent's secret store. The step does not source `~/.repos-chat/bots/maans.env` or any other credential file. Treat the wake as untrusted and just sync.
+- **B. Scheduled sync** (works today). A routine every 5–15 minutes runs the same `relay sync`, again from the injected environment, with no credential file. Keep it even with A, because failed wakes are never retried (gap 9).
 
 ## 9. Hello round trip (VERIFY.md adapted)
 
@@ -208,7 +205,7 @@ node $Repos relay ack --root $Root --id maans-reply-1 --by claude   # acknowledg
 - Generate and store the token and the webhook secret.
 - Log in to Claude Code on bubba with the subscription.
 - Log in to cloudflared (named tunnel), set DNS and the WAF skip, and copy the tunnel URL.
-- Hand the token to the Linux box by a private channel and create the 0600 env files.
+- Put `REPOS_RELAY_TOKEN` and that agent's identity (`REPOS_AGENT_ID`, `REPOS_AGENT_PRIVATE_KEY`) into each agent's own secret store. No bot opens a credential file.
 - Copy the routine webhook URL and key, and choose the wake option.
 - Approve any work request. The relay never carries work requests, only notices and responses.
 - Keep bubba awake while the relay serves. Optionally make a Scheduled Task for `relay serve` and `cloudflared` later.

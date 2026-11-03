@@ -449,6 +449,7 @@ async function watch(args, context) {
   }
   let cursor = readCursor(context.workspace);
   let backoff = 0;
+  let attempts = 0;
   do {
     const pushed = await pushOutbox(context.workspace, url, token);
     const result = await postJson(url, token, '/v1/watch', signWatch(identity, { cursor, timeoutMs }));
@@ -458,10 +459,15 @@ async function watch(args, context) {
       // sleeping laptop. Retry transient failures; auth and signature errors
       // still stop it so a bad token or key is not hidden.
       if (once || !transientStatus(result.status)) throw new Error(error);
+      attempts += 1;
       backoff = nextBackoff(backoff);
       process.stderr.write(`relay watch: ${error}; retrying in ${Math.round(backoff / 1000)}s\n`);
       await sleep(backoff);
       continue;
+    }
+    if (attempts > 0) {
+      process.stderr.write(`relay reconnected after ${attempts} attempt${attempts === 1 ? '' : 's'}\n`);
+      attempts = 0;
     }
     backoff = 0;
     const imported = [];

@@ -677,14 +677,16 @@ test('a long-running watch survives a relay restart and still delivers mail', as
     await new Promise(resolve => relay.child.on('exit', resolve));
     await waitUntil(() => /retrying/.test(err), 3000);
     assert.match(err, /retrying/);
+    assert.doesNotMatch(err, /reconnected/);
     assert.equal(exited, null, `watch exited while the relay was down: ${err}`);
     const child = spawn(process.execPath, [
       cli, 'relay', 'serve', '--data', data, '--port', port, '--store', 'sqlite', '--token', TOKEN,
     ], { stdio: ['ignore', 'pipe', 'pipe'] });
     relay = { child, ...(await listenLine(child)) };
     jsonRun(right, ['relay', 'send', '--to', 'agent:left', '--subject', 'Back', '--body', 'after restart', '--client-message-id', 'back-1'], b);
-    await waitUntil(() => /back-1/.test(out), 5000);
+    await waitUntil(() => /back-1/.test(out) && /relay reconnected after \d+ attempts?/.test(err), 5000);
     assert.match(out, /back-1/);
+    assert.match(err, /relay reconnected after \d+ attempts?/);
     assert.equal(exited, null);
   } finally {
     watching?.kill('SIGTERM');
