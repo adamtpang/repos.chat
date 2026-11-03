@@ -262,6 +262,8 @@ The current implementation proves identity, presence, bounded work, declared col
 - explicit proposal approval before message delivery
 - guarded GitHub App planning, app-authored commit, and draft-PR adapter
 - local Git commits and stored GitHub PRs in the inspector
+- private local conversation queue with exact-reply approval and durable Codex desktop relay attempts (see QUEUE.md; an active relay task is required)
+- opt-in local Codex app-server bridge for explicitly bound sessions with exclusive native writer ownership, exact request receipts, result refresh, and structured next choices (see LOCAL_BRIDGE.md)
 
 ## Later, only if local use proves it
 
