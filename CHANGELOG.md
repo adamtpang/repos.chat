@@ -2,10 +2,13 @@
 
 All notable changes to repos.chat are documented here.
 
-## [Unreleased]
+## [0.6.0] - 2026-11-03
 
 ### Added
 
+- Signed remote relay for two machines that do not share a disk. `repos relay serve` is a Node HTTPS server with a bearer token plus ed25519 envelopes, pluggable `file` (default), `memory`, and `sqlite` storage, and no new npm dependency. `repos identity` keeps the private key in the user profile or in environment variables. Targets are exactly one of `agent:<id>`, `session:<id>`, or `repo:<name>`. `clientMessageId` is idempotent in the relay and in the local mailbox. `repos relay sync` pushes the outbox and pulls the inbox. `repos relay watch` long-polls. A registered webhook receives a wake POST. `--claude-print` and `--on-mail` are opt-in local wakes.
+- `repos-mcp` records a seen receipt on inbox reads, records who acknowledged on ack, and adds `repos_relay_send`.
+- The session hook takes `--host` instead of a hard-coded Claude name, and `--agent` for agent-addressed mail.
 - Deliver messages into live Claude Code sessions: `repos hook claude` installs a `UserPromptSubmit` and `SessionStart` hook that shows each new message once per session as untrusted relayed content, prints nothing when nothing is new, and can never block a prompt.
 - Track delivery honestly: per-session `seen` receipts, kept apart from `ack`, and `repos sent` (plus the `repos_sent` MCP tool) showing queued, seen by host at time, or acked. `repos send` now reports a new message as queued, not seen.
 - Bound and triage old mail: optional `expiresAt` via `--expires-in` or `--expires-at`, stale flags after 7 days in `repos inbox`, and `repos focus` counts of open, unseen, stale, and expired messages.

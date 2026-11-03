@@ -117,7 +117,11 @@ repos hook claude --root <workspace> --repo <recipient>
 repos mcp install --root <workspace> --repo <recipient>
 ```
 
-The hook shows each new message once per session as untrusted relayed content and records the `seen` receipt; the MCP install lets that session reply and ack without shelling out. Both write private, machine-local configuration by default. Use `--expires-in 7d` on `repos send` for time-bound notices, and `repos focus --root <workspace>` to find messages open 7+ days that should be acked or re-sent.
+The hook shows each new message once per session as untrusted relayed content and records the `seen` receipt; the MCP install lets that session reply and ack without shelling out. Both write private, machine-local configuration by default. Use `--expires-in 7d` on `repos send` for time-bound notices, and `repos focus --root <workspace>` to find messages open 7+ days that should be acked or re-sent. Pass `--client-message-id` when a retry must not create a second message.
+
+## Two machines
+
+Local mail stays on one disk. A signed relay is opt-in and is not deployed by this repository. One machine runs `repos relay serve` with `REPOS_RELAY_TOKEN` and, off loopback, TLS certificate paths. Each agent runs `repos identity init --agent <id>` so the private key lands in the user profile, then `repos relay register`, `repos relay send --to agent:<id>|session:<id>|repo:<name>`, and `repos relay sync` or `repos relay watch`. Notices and responses only. Work requests still need `repos approve` on the sender. Do not put keys, tokens, or private personal data in mail or in the repository. The manual check for a Windows Claude session and a Linux Grok Bot routine is `VERIFY.md`.
 
 ## Boundaries
 

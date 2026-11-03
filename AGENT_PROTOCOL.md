@@ -121,7 +121,9 @@ A response may also carry:
 
 An approved follow-up request carries `replyTo` too, bound into its proposal digest, and joins the conversation it continues. `repos conversation --id ID` returns every message in one conversation across all mailboxes. Messages written before `conversationId` existed resolve through their `replyTo` chain.
 
-Version 3 remains local-first. Messages are JSON files under the workspace root. Approved recipe requests carry proposal, exchange, permission, and recipe-digest metadata; the host revalidates that chain against the current manifest before invoking a model. There is no required account, server, network call, or model-provider dependency.
+Version 3 remains local-first. Messages are JSON files under the workspace root. Approved recipe requests carry proposal, exchange, permission, and recipe-digest metadata; the host revalidates that chain against the current manifest before invoking a model. A workspace that never leaves one disk needs no account, server, network call, or model-provider dependency.
+
+A sender may set `clientMessageId`. The mailbox claims that id before it writes the file, so a retry with the same id and the same content returns the original message. A retry with the same id and different content is refused. Message ids minted at random, with no client id, are still distinct sends.
 
 ## Connection contract
 
@@ -171,11 +173,33 @@ A message has three separate states for its sender:
 
 Seen never implies acked, and an agent must report a queued message as not seen yet. Receipts are append-only files created exclusively, one per host session, so concurrent sessions never race and the same file proves a session already saw the message. A message may carry `expiresAt`; expired messages stay in history and in `repos inbox`, flagged, but delivery hooks stop pushing them. Messages open longer than seven days (`--stale-days N`) are flagged as stale by `repos inbox`, `repos sent`, and `repos focus`.
 
-A delivery hook must exit successfully on every path, print nothing when nothing is new, read only its own repository's mailbox, and fence every relayed body as untrusted data that cannot close its own fence. `inbox-hook.mjs` implements this for Claude Code's `UserPromptSubmit` and `SessionStart` events.
+A delivery hook must exit successfully on every path, print nothing when nothing is new, read only its own repository's mailbox, and fence every relayed body as untrusted data that cannot close its own fence. `inbox-hook.mjs` implements this for Claude Code's `UserPromptSubmit` and `SessionStart` events. The host name is `--host` (Claude Code installs pass `--host claude`). An optional `--agent` also surfaces mail addressed to that agent.
 
 ## Live session contract
 
 `repos-mcp --root WORKSPACE --as REPO` is a stdio MCP server for an agent already running in Claude Code, Codex, Grok, or another MCP client. Its identity is fixed at launch. It exposes discovery, proposals, notices and responses, the inbox, conversations, and acknowledgement. It never approves a proposal and never returns the approval token or the digest it derives from, so the human gate applies to live agents as it does to the CLI.
+
+## Remote relay
+
+Two machines do not share `.repo-connect/`. `repos relay serve` is a small HTTPS server in this repository. It is opt-in. Local mail does not call it. Nothing here deploys it.
+
+The relay admits callers with a bearer token (`REPOS_RELAY_TOKEN`, at least 16 characters) and identifies them with an ed25519 signature. The private key lives in `REPOS_AGENT_PRIVATE_KEY` or in `~/.repos-chat/identity.json` (`REPOS_IDENTITY_FILE` overrides the path). It is refused inside a repository. The relay binds an agent id to the first public key that registers it. A signature that names a different agent is rejected as spoofed `--from`.
+
+Every relay envelope has exactly one target, copied from the idea in a2a-bridge and not taken as a dependency:
+
+- `agent:<id>` reaches that agent
+- `session:<id>` reaches the agent who claimed that session
+- `repo:<name>` reaches the agent who claimed that repository
+
+The inner message `from` must be the signing agent or a repository that agent claimed. The relay accepts `notice` and `response` only. A work `request` still has to be approved on the sender's machine; the relay does not grant that approval and will not carry a raw request.
+
+`clientMessageId` is inside the signature. The relay stores one copy per agent and client id. The same bytes are a retry. Different bytes with the same id are a conflict. `repos relay sync` pushes the local outbox and pulls the inbox. `repos relay watch` long-polls. Both are Node, with no extra install, and they use `path.join` so Windows and Linux stay inside the workspace.
+
+Storage is pluggable. The default is a JSON file under `REPOS_RELAY_DATA_DIR` (otherwise `~/.repos-chat/relay`). `memory` is for tests. `sqlite` uses the built-in `node:sqlite` module when the process is Node 22.5 or newer. A webhook URL registered for an agent receives `repos.chat/wake/1` when mail arrives for that agent, a session they claimed, or a repository they claimed. The body of the message is not in the wake; the agent syncs to read it. `REPOS_RELAY_WEBHOOK_SECRET`, when set, is an HMAC-SHA256 in `X-Repos-Signature`. A failed webhook does not drop the message.
+
+The server listens on loopback unless `REPOS_RELAY_TLS_CERT` and `REPOS_RELAY_TLS_KEY` are set. `REPOS_RELAY_INSECURE=1` is the explicit override for a trusted network. Claude Code does not get a push into an already open prompt: `repos relay watch` makes the mail local so the hook shows it on the next prompt, and `--claude-print` is the opt-in that starts `claude -p` on new mail. `--on-mail` runs one program, without a shell, for any other wake.
+
+`repos-mcp` records a seen receipt when `repos_inbox` returns mail, records `acknowledgedBy` on `repos_ack`, and exposes `repos_relay_send` for one signed remote target.
 
 ## Trust and safety
 
@@ -188,7 +212,7 @@ A delivery hook must exit successfully on every path, print nothing when nothing
 - Triggers and proposals never grant authority. Every recipe currently requires `approval: human-required`.
 - Acknowledgement means the message was handled, not that its claims are true.
 - The inspector binds only to `127.0.0.1`. It is not a public dashboard.
-- Remote transport, if added, must authenticate repositories and preserve an audit log.
+- The relay authenticates with a bearer token and an ed25519 signature, rejects a spoofed sender, and keeps every accepted envelope. A captured envelope can be replayed only as the same `clientMessageId`.
 
 ## Scope of one Repo Rep
 
@@ -227,7 +251,9 @@ The current implementation proves identity, presence, bounded work, declared col
 - A2A-aligned response states and the answering model on every host response
 - approved follow-up requests that continue a conversation
 - `repos-mcp`, a stdio MCP server that gives live agent sessions the protocol under the same human gate
-- Claude Code delivery hook with once-per-session injection and persistent `seen` receipts
+- Claude Code delivery hook with once-per-session injection and persistent `seen` receipts, a host name that is not hard-coded, and optional agent-addressed mail
+- signed remote relay with agent keypairs, exactly-one target (`agent`, `session`, or `repo`), idempotent `clientMessageId`, webhook wake, and `repos relay sync` / `watch`
+- seen receipts on MCP inbox reads, `acknowledgedBy` on ack, and `repos_relay_send`
 - sender delivery view (`repos sent`), optional `expiresAt`, stale flags, and workspace triage (`repos focus`)
 - proactive watcher with verifiable local presence
 - structured completion responses with evidence, tests, and risks
@@ -240,7 +266,6 @@ The current implementation proves identity, presence, bounded work, declared col
 ## Later, only if local use proves it
 
 - inbox priorities, deadlines, and cancellation events
-- signed remote relay for repositories that do not share a filesystem
 - policy capabilities describing which repositories may request which operations
 - cost, latency, and outcome telemetry by Repo Rep
 

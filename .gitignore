@@ -3,3 +3,11 @@ node_modules/
 .repo-connect/
 *.tgz
 .env*
+
+# Private agent identity and relay storage. Keys stay in the user profile
+# (~/.repos-chat/identity.json) or in REPOS_AGENT_PRIVATE_KEY, never in a clone.
+.repos-chat/
+identity.json
+relay-data/
+*.pem
+*.ed25519

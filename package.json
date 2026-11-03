@@ -1,7 +1,7 @@
 {
   "name": "repos.chat",
-  "version": "0.5.0",
-  "description": "Every repo gets a rep: verified identity, proactive presence, and durable local conversations.",
+  "version": "0.6.0",
+  "description": "Every repo gets a rep: verified identity, proactive presence, and durable conversations over a local mailbox or a signed relay.",
   "type": "module",
   "bin": {
     "repos": "./repos.mjs",
@@ -17,12 +17,18 @@
     "mcp.mjs",
     "inbox-hook.mjs",
     "receipts.mjs",
+    "identity.mjs",
+    "relay.mjs",
+    "relay-store.mjs",
+    "relay-local.mjs",
+    "relay-cli.mjs",
     "dashboard.mjs",
     "github-app.mjs",
     "AGENT_PROTOCOL.md",
     "GITHUB_APP.md",
     "PROTOCOL_RESEARCH.md",
     "BRIDGES.md",
+    "VERIFY.md",
     "CHANGELOG.md",
     "README.md",
     "skills"
