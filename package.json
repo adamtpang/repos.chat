@@ -8,6 +8,7 @@
     "repos-agent": "./agent-host.mjs",
     "repos-dashboard": "./dashboard.mjs",
     "repos-github": "./github-app.mjs",
+    "repos-queue": "./queue.mjs",
     "repos-mcp": "./mcp.mjs"
   },
   "files": [
@@ -24,6 +25,18 @@
     "relay-cli.mjs",
     "dashboard.mjs",
     "github-app.mjs",
+    "queue.mjs",
+    "queue-store.mjs",
+    "queue-server.mjs",
+    "queue-relay.mjs",
+    "desktop-submit.mjs",
+    "desktop-submit.ps1",
+    "DESKTOP_SUBMISSION.md",
+    "codex-connection.mjs",
+    "local-bridge.mjs",
+    "LOCAL_BRIDGE.md",
+    "queue-ui",
+    "QUEUE.md",
     "AGENT_PROTOCOL.md",
     "GITHUB_APP.md",
     "PROTOCOL_RESEARCH.md",
@@ -38,6 +51,8 @@
     "agent": "node agent-host.mjs run",
     "watch": "node agent-host.mjs watch",
     "dashboard": "node dashboard.mjs",
+    "queue": "node queue.mjs serve",
+    "bridge": "node queue.mjs serve --bridge",
     "mcp": "node mcp.mjs"
   },
   "engines": {
