@@ -5,6 +5,12 @@ url: https://repos.chat
 cluster: agent-infrastructure
 
 provides:
+  - id: local-codex-session-bridge
+    what: continues explicitly bound Codex sessions through a local app-server connection with native writer ownership and verified request receipts
+    at: local-bridge.mjs
+  - id: private-conversation-queue
+    what: local decision cards and durable approved requests for an active Codex desktop task relay
+    at: queue.mjs
   - id: manifest-verifier
     what: verifies that repository capability claims point to real paths
     at: repos.mjs
