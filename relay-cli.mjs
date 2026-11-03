@@ -387,7 +387,12 @@ async function serve(args, { packageRoot }) {
   const { relay, kind } = await relayFromEnv(env);
   const listening = await listenRelay(relay, { host, port, tls: readTls(env) });
   process.stdout.write(`${JSON.stringify({ ok: true, url: listening.url, store: kind, data })}\n`);
-  const stop = () => listening.server.close(() => process.exit(0));
+  const stop = () => {
+    // close() alone waits for keep-alive watchers that keep long-polling, so
+    // Ctrl-C would hang while any agent is watching. Drop them; they retry.
+    listening.server.close(() => process.exit(0));
+    listening.server.closeAllConnections?.();
+  };
   process.on('SIGTERM', stop);
   process.on('SIGINT', stop);
   await new Promise(() => {});
@@ -422,6 +427,16 @@ function formatTargetSafe(target) {
   return target ? `${target.kind}:${target.id}` : null;
 }
 
+export function transientStatus(status) {
+  return status === 0 || status === 408 || status === 429 || status >= 500;
+}
+
+export function nextBackoff(previous, max = Number(process.env.REPOS_RELAY_WATCH_MAX_BACKOFF_MS) || 30000) {
+  return Math.min(max, previous ? previous * 2 : 1000);
+}
+
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
 async function watch(args, context) {
   const identity = identityFrom(args);
   const { url, token } = endpoints(args);
@@ -433,10 +448,28 @@ async function watch(args, context) {
     if (!claim.ok) throw new Error(claim.body?.error || 'could not claim session');
   }
   let cursor = readCursor(context.workspace);
+  let backoff = 0;
+  let attempts = 0;
   do {
     const pushed = await pushOutbox(context.workspace, url, token);
     const result = await postJson(url, token, '/v1/watch', signWatch(identity, { cursor, timeoutMs }));
-    if (!result.ok || !result.body?.ok) throw new Error(result.body?.error || `watch failed (${result.status})`);
+    if (!result.ok || !result.body?.ok) {
+      const error = result.body?.error || `watch failed (${result.status})`;
+      // A long-running watcher outlives relay restarts, tunnel blips, and a
+      // sleeping laptop. Retry transient failures; auth and signature errors
+      // still stop it so a bad token or key is not hidden.
+      if (once || !transientStatus(result.status)) throw new Error(error);
+      attempts += 1;
+      backoff = nextBackoff(backoff);
+      process.stderr.write(`relay watch: ${error}; retrying in ${Math.round(backoff / 1000)}s\n`);
+      await sleep(backoff);
+      continue;
+    }
+    if (attempts > 0) {
+      process.stderr.write(`relay reconnected after ${attempts} attempt${attempts === 1 ? '' : 's'}\n`);
+      attempts = 0;
+    }
+    backoff = 0;
     const imported = [];
     const skipped = [];
     const wakes = [];

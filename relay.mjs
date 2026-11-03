@@ -317,7 +317,12 @@ if (invokedDirectly()) {
     const port = portFlag > -1 ? Number(process.argv[portFlag + 1]) : Number(env.REPOS_RELAY_PORT || 8787);
     const listening = await listenRelay(relay, { host, port, tls });
     process.stdout.write(`${JSON.stringify({ ok: true, url: listening.url, store: kind })}\n`);
-    const stop = () => listening.server.close(() => process.exit(0));
+    const stop = () => {
+      // close() alone waits for keep-alive watchers that keep long-polling, so
+      // Ctrl-C would hang while any agent is watching. Drop them; they retry.
+      listening.server.close(() => process.exit(0));
+      listening.server.closeAllConnections?.();
+    };
     process.on('SIGTERM', stop);
     process.on('SIGINT', stop);
   } catch (error) {

@@ -645,3 +645,70 @@ test('MCP inbox records who saw and acked, and can send through the relay', asyn
     relay.child.kill('SIGTERM');
   }
 });
+
+test('a long-running watch survives a relay restart and still delivers mail', async () => {
+  const data = temp('repos-chat-restart-');
+  const left = temp('repos-chat-restart-a-');
+  const right = temp('repos-chat-restart-b-');
+  const homes = temp('repos-chat-restart-ids-');
+  const aFile = path.join(homes, 'a.json');
+  const bFile = path.join(homes, 'b.json');
+  let relay = await startRelay(data, { store: 'sqlite' });
+  const port = new URL(relay.url).port;
+  let watching = null;
+  try {
+    jsonRun(left, ['identity', 'init', '--agent', 'left', '--file', aFile]);
+    jsonRun(right, ['identity', 'init', '--agent', 'right', '--file', bFile]);
+    const a = relayEnv(relay.url, aFile);
+    const b = relayEnv(relay.url, bFile);
+    assert.equal(run(left, ['relay', 'register'], a).status, 0);
+    assert.equal(run(right, ['relay', 'register'], b).status, 0);
+    watching = spawn(process.execPath, [cli, 'relay', 'watch', '--timeout-ms', '500', '--root', left], {
+      env: { ...process.env, ...a, REPOS_RELAY_WATCH_MAX_BACKOFF_MS: '300' },
+    });
+    let out = '';
+    let err = '';
+    let exited = null;
+    watching.stdout.on('data', chunk => { out += chunk; });
+    watching.stderr.on('data', chunk => { err += chunk; });
+    watching.on('exit', code => { exited = code; });
+    await new Promise(resolve => setTimeout(resolve, 300));
+    relay.child.kill('SIGTERM');
+    await new Promise(resolve => relay.child.on('exit', resolve));
+    await waitUntil(() => /retrying/.test(err), 3000);
+    assert.match(err, /retrying/);
+    assert.doesNotMatch(err, /reconnected/);
+    assert.equal(exited, null, `watch exited while the relay was down: ${err}`);
+    const child = spawn(process.execPath, [
+      cli, 'relay', 'serve', '--data', data, '--port', port, '--store', 'sqlite', '--token', TOKEN,
+    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+    relay = { child, ...(await listenLine(child)) };
+    jsonRun(right, ['relay', 'send', '--to', 'agent:left', '--subject', 'Back', '--body', 'after restart', '--client-message-id', 'back-1'], b);
+    await waitUntil(() => /back-1/.test(out) && /relay reconnected after \d+ attempts?/.test(err), 5000);
+    assert.match(out, /back-1/);
+    assert.match(err, /relay reconnected after \d+ attempts?/);
+    assert.equal(exited, null);
+  } finally {
+    watching?.kill('SIGTERM');
+    relay.child.kill('SIGTERM');
+  }
+});
+
+test('watch still stops on an auth failure instead of retrying', async () => {
+  const data = temp('repos-chat-authfail-');
+  const left = temp('repos-chat-authfail-a-');
+  const homes = temp('repos-chat-authfail-ids-');
+  const aFile = path.join(homes, 'a.json');
+  const relay = await startRelay(data, { store: 'memory' });
+  try {
+    jsonRun(left, ['identity', 'init', '--agent', 'left', '--file', aFile]);
+    const env = { ...relayEnv(relay.url, aFile), REPOS_RELAY_TOKEN: 'wrong-token-but-long-enough' };
+    const result = spawnSync(process.execPath, [cli, 'relay', 'watch', '--timeout-ms', '200', '--root', left], {
+      encoding: 'utf8', env: { ...process.env, ...env }, timeout: 10000,
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /unauthorized/);
+  } finally {
+    relay.child.kill('SIGTERM');
+  }
+});
