@@ -177,7 +177,7 @@ codex mcp add repos -- node /path/to/repos.chat/mcp.mjs --root ~/projects --as m
 grok mcp add repos node -- /path/to/repos.chat/mcp.mjs --root ~/projects --as metrics-service
 ```
 
-The session gets `repos_whoami`, `repos_graph`, `repos_propose`, `repos_proposals`, `repos_send`, `repos_inbox`, `repos_conversation`, and `repos_ack`. The identity is fixed at launch, undeclared arguments are refused, and the human gate holds: the agent can propose work but no tool approves it, and the approval token is not returned. That gate is procedural, not cryptographic; an agent with its own shell access to the workspace could still read the proposal file. [BRIDGES.md](BRIDGES.md) compares this with MCP Agent Mail, ACP, and CLI-to-CLI bridges.
+The session gets `repos_whoami`, `repos_graph`, `repos_propose`, `repos_proposals`, `repos_send`, `repos_sent`, `repos_inbox`, `repos_conversation`, `repos_ack`, and `repos_relay_send`. Reading the inbox records a seen receipt for that session. Ack records who acknowledged. The identity is fixed at launch, undeclared arguments are refused, and the human gate holds: the agent can propose work but no tool approves it, and the approval token is not returned. That gate is procedural, not cryptographic; an agent with its own shell access to the workspace could still read the proposal file. [BRIDGES.md](BRIDGES.md) compares this with MCP Agent Mail, ACP, and CLI-to-CLI bridges.
 
 ## Make sure messages are seen
 
@@ -196,7 +196,36 @@ The sender then sees the truth:
 repos sent --root ~/projects --repo research-service
 ```
 
-Each message reads `queued, not seen yet`, `seen by claude at <time>, not yet acked`, or `acked at <time>`. Seeing is not handling, and both are tracked separately. `repos send --expires-in 7d` (or `--expires-at`) bounds a notice's life; expired messages are flagged and no longer pushed into sessions. `repos focus --root ~/projects` counts open, never-seen, 7+ day old, and expired messages across the workspace so old requests get acked or re-sent.
+Each message reads `queued, not seen yet`, `seen by claude at <time>, not yet acked`, or `acked at <time>`. Seeing is not handling, and both are tracked separately. `repos send --expires-in 7d` (or `--expires-at`) bounds a notice's life; expired messages are flagged and no longer pushed into sessions. `repos focus --root ~/projects` counts open, never-seen, 7+ day old, and expired messages across the workspace so old requests get acked or re-sent. `repos send --client-message-id ID` makes a retry the same message.
+
+## Talk between two machines
+
+Local mail never leaves the disk. When a Linux agent and a Windows session do not share a filesystem, run the relay yourself. It is not started by the website, and this repository does not deploy it.
+
+```sh
+# on the machine that will hold the relay, outside the git clone
+export REPOS_RELAY_TOKEN="$(openssl rand -hex 24)"
+export REPOS_RELAY_DATA_DIR="$HOME/.repos-chat/relay"
+export REPOS_RELAY_TLS_CERT=/path/to/fullchain.pem
+export REPOS_RELAY_TLS_KEY=/path/to/privkey.pem
+repos relay serve --host 0.0.0.0 --port 8787
+```
+
+Without the certificate pair, `repos relay serve` listens only on `127.0.0.1`. `REPOS_RELAY_INSECURE=1` is the explicit way to bind elsewhere without TLS. `REPOS_RELAY_STORE` is `file` (the default, zero dependencies), `memory`, or `sqlite` on Node 22.5+ via `node:sqlite`. `REPOS_RELAY_WEBHOOK_SECRET` signs wake POSTs. A serverless host with an ephemeral disk will forget the file store on the next instance; run the long-lived process on a machine you control. Do not mount this server from the public website's `vercel.json`.
+
+On each agent machine:
+
+```sh
+repos identity init --agent maans
+export REPOS_RELAY_URL=https://relay.example
+export REPOS_RELAY_TOKEN=...
+repos relay register --webhook https://maans.example/wake --repo observatory
+repos relay send --to agent:bubba --subject "Hello" --body "Are you there?" --client-message-id hello-1
+repos relay sync
+repos relay watch
+```
+
+The private key stays in `~/.repos-chat/identity.json` or in `REPOS_AGENT_ID` and `REPOS_AGENT_PRIVATE_KEY`. `repos relay watch --claude-print` is opt-in and starts `claude -p` for new mail. The exact Windows and Linux check is [VERIFY.md](VERIFY.md).
 
 ## Optional GitHub App contribution
 
@@ -238,6 +267,12 @@ repos sent         show whether each sent message is queued, seen, or acked
 repos focus        count open, unseen, stale, and expired messages
 repos hook claude  deliver new messages into live Claude Code sessions
 repos mcp install  add repos-mcp to a Claude Code project
+repos identity     create or show an ed25519 agent key in the user profile
+repos relay serve  run the signed HTTPS relay
+repos relay register   claim repos and an optional wake URL
+repos relay send   sign one notice or response to agent:, session:, or repo:
+repos relay sync   push the outbox and pull the inbox
+repos relay watch  long-poll, then optionally start claude -p or another program
 repos-dashboard    inspect the local graph, presence, and conversations
 repos-github status  check GitHub App configuration without a network call
 repos-github plan    record reviewed files, hashes, tests, and base locally
@@ -271,6 +306,6 @@ A manifest that sends an agent to nonexistent code is worse than no manifest. Ca
 
 ## Status
 
-v0.5 implements the Repository Representation Protocol: manifest and recipe verification, four proposal trigger classes, exact human approval, live watcher leases, conversation ids, canon drift checks, graph export, local mail, machine-readable context, bounded host adapters for Codex, Claude, and Grok, an MCP server for live sessions, an original pixel-pet localhost habitat, Git/PR visibility, a guarded GitHub App draft-PR adapter, and installable Repo Rep and GitHub-star-matching skills.
+v0.6 implements the Repository Representation Protocol: manifest and recipe verification, four proposal trigger classes, exact human approval, live watcher leases, conversation ids, canon drift checks, graph export, local mail, an optional signed relay for two machines, machine-readable context, bounded host adapters for Codex, Claude, and Grok, an MCP server for live sessions, an original pixel-pet localhost habitat, Git/PR visibility, a guarded GitHub App draft-PR adapter, and installable Repo Rep and GitHub-star-matching skills.
 
 MIT.

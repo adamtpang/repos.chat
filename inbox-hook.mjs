@@ -20,8 +20,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { freshness, hasSeen, recordSeen } from './receipts.mjs';
+import { listRelayInbox } from './relay-local.mjs';
 
-const HOST = 'claude';
+const SAFE_HOST = /^[A-Za-z0-9._-]+$/;
+const SAFE_AGENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const MAX_MESSAGES = 5;
 const MAX_BODY_CHARS = 1500;
 // Claude Code caps injected context at 10,000 characters per hook.
@@ -73,6 +75,12 @@ function openMessages(root, repo) {
   return messages.sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
 }
 
+function agentMessages(root, agent) {
+  if (!agent || !SAFE_AGENT.test(agent)) return [];
+  return listRelayInbox(root, 'agent', agent).filter(message => message && !message.acknowledgedAt
+    && /^[A-Za-z0-9_-]+$/.test(message.id || '') && message.receiptRepo);
+}
+
 function fence(body) {
   const text = String(body ?? '');
   const clipped = text.length > MAX_BODY_CHARS ? `${text.slice(0, MAX_BODY_CHARS)}\n[truncated; full text in repos inbox]` : text;
@@ -107,23 +115,25 @@ async function main() {
     ? path.resolve(option('root'))
     : path.resolve(process.env.CLAUDE_PROJECT_DIR || process.cwd(), '..');
   const repo = option('repo');
+  const host = option('host') || 'claude';
+  const agent = option('agent');
   const event = option('event') === 'SessionStart' ? 'SessionStart' : 'UserPromptSubmit';
   const dryRun = args.includes('--dry-run');
-  if (!repo || !/^[A-Za-z0-9._-]+$/.test(repo)) return;
+  if (!repo || !/^[A-Za-z0-9._-]+$/.test(repo) || !SAFE_HOST.test(host)) return;
 
   let input = {};
   try { input = JSON.parse((await readStdin()) || '{}'); } catch {}
   const session = typeof input.session_id === 'string' && input.session_id ? input.session_id : 'unknown';
 
-  const unseen = openMessages(root, repo)
+  const unseen = [...openMessages(root, repo), ...agentMessages(root, agent)]
     .filter(message => !freshness(message).expired)
-    .filter(message => !hasSeen(root, repo, message.id, HOST, session));
+    .filter(message => !hasSeen(root, message.receiptRepo || repo, message.id, host, session));
   if (!unseen.length) return;
 
   const shown = unseen.slice(0, MAX_MESSAGES);
   if (!dryRun) {
     for (const message of shown) {
-      try { recordSeen(root, repo, message.id, { host: HOST, session }); } catch {}
+      try { recordSeen(root, message.receiptRepo || repo, message.id, { host, session }); } catch {}
     }
   }
   process.stdout.write(`${JSON.stringify({

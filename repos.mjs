@@ -27,7 +27,9 @@ import path from 'path';
 import crypto from 'crypto';
 import { execFileSync, spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
-import { STALE_DAYS, deliveryStatus, freshness, parseDuration, readSeen } from './receipts.mjs';
+import { STALE_DAYS, deliveryStatus, freshness, parseDuration, readSeen, recordSeen } from './receipts.mjs';
+import { formatHookCommand } from './relay-local.mjs';
+import { runIdentity, runRelay } from './relay-cli.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -484,10 +486,64 @@ function deliveryPath(to, id) {
 }
 
 function sameMessage(left, right) {
-  return ['id', 'from', 'to', 'kind', 'subject', 'body', 'replyTo', 'conversationId', 'state', 'expiresAt']
+  return ['id', 'from', 'to', 'kind', 'subject', 'body', 'replyTo', 'conversationId', 'state', 'expiresAt', 'clientMessageId']
     .every(key => (left?.[key] ?? null) === (right?.[key] ?? null))
     && JSON.stringify(left?.authorization || null) === JSON.stringify(right?.authorization || null)
-    && JSON.stringify(left?.host || null) === JSON.stringify(right?.host || null);
+    && JSON.stringify(left?.host || null) === JSON.stringify(right?.host || null)
+    && JSON.stringify(left?.target || null) === JSON.stringify(right?.target || null)
+    && JSON.stringify(left?.origin || null) === JSON.stringify(right?.origin || null);
+}
+
+// Retries that mint a new message id still name the same send with
+// clientMessageId. The index is claimed before the mailbox file so a second
+// attempt returns the first copy instead of writing another.
+function sameClientPayload(left, right) {
+  return ['from', 'to', 'kind', 'subject', 'body', 'replyTo', 'state', 'expiresAt', 'clientMessageId']
+    .every(key => (left?.[key] ?? null) === (right?.[key] ?? null))
+    && JSON.stringify(left?.authorization || null) === JSON.stringify(right?.authorization || null)
+    && JSON.stringify(left?.host || null) === JSON.stringify(right?.host || null)
+    && JSON.stringify(left?.target || null) === JSON.stringify(right?.target || null)
+    && JSON.stringify(left?.origin || null) === JSON.stringify(right?.origin || null);
+}
+
+function clientIndexPath(to, clientMessageId) {
+  if (!safeRepoId(to) || !safeMessageId(clientMessageId)) return null;
+  return path.join(ROOT, '.repo-connect', 'client-ids', to, `${clientMessageId}.json`);
+}
+
+function claimClientId(message) {
+  if (!message.clientMessageId) return { ok: true };
+  const indexPath = clientIndexPath(message.to, message.clientMessageId);
+  if (!indexPath) return { ok: false, error: 'client_message_id contains unsupported characters' };
+  ensureDurableDirectory(path.dirname(indexPath));
+  const pointer = { id: message.id, to: message.to, clientMessageId: message.clientMessageId };
+  let fd = null;
+  try {
+    fd = fs.openSync(indexPath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_SYNC, 0o600);
+    fs.writeFileSync(fd, `${JSON.stringify(pointer)}\n`, 'utf8');
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = null;
+    return { ok: true };
+  } catch (error) {
+    if (fd !== null) try { fs.closeSync(fd); } catch {}
+    if (error.code !== 'EEXIST') return { ok: false, error: `could not record client_message_id: ${error.message}` };
+    let existingPointer;
+    try { existingPointer = JSON.parse(fs.readFileSync(indexPath, 'utf8')); }
+    catch { return { ok: false, error: `client_message_id index is unreadable: ${message.clientMessageId}` }; }
+    let existing = null;
+    try { existing = JSON.parse(fs.readFileSync(messagePath(existingPointer.to, existingPointer.id), 'utf8')); }
+    catch { /* the first attempt claimed the id and died before the mailbox write */ }
+    if (!existing) {
+      return existingPointer.id === message.id
+        ? { ok: true }
+        : { ok: false, error: `client_message_id is claimed by an unfinished delivery: ${message.clientMessageId}` };
+    }
+    if (!sameClientPayload(existing, message)) {
+      return { ok: false, error: `client_message_id already exists with different content: ${message.clientMessageId}` };
+    }
+    return { ok: true, reused: true, message: existing };
+  }
 }
 
 function writeMessageExclusive(message) {
@@ -1014,9 +1070,11 @@ function deliverMessage(repos, input) {
 
   const requestedId = input.id || null;
   if (requestedId && !safeMessageId(requestedId)) return { ok: false, error: 'message id contains unsupported characters' };
+  const clientMessageId = input.clientMessageId || null;
+  if (clientMessageId && !safeMessageId(clientMessageId)) return { ok: false, error: 'client_message_id contains unsupported characters' };
   const createdAt = new Date().toISOString();
   const stamp = createdAt.replace(/[-:.]/g, '');
-  const id = requestedId || `${stamp}-${crypto.randomBytes(4).toString('hex')}`;
+  const id = requestedId || clientMessageId || `${stamp}-${crypto.randomBytes(4).toString('hex')}`;
   const parent = replyTo ? findMessageById(replyTo) : null;
   const conversationId = requestedConversationId || parent?.conversationId || id;
   const message = {
@@ -1035,20 +1093,50 @@ function deliverMessage(repos, input) {
     ...(input.host ? { host: input.host } : {}),
     ...(input.expiresAt ? { expiresAt: new Date(input.expiresAt).toISOString() } : {}),
     ...(input.metadata ? { authorization: input.metadata } : {}),
+    ...(clientMessageId ? { clientMessageId } : {}),
+    ...(input.target ? { target: input.target } : {}),
+    ...(input.origin ? { origin: input.origin } : {}),
+    ...(input.receiptRepo ? { receiptRepo: input.receiptRepo } : {}),
   };
+  return commitMessage(message);
+}
+
+function commitMessage(message) {
+  const claimed = claimClientId(message);
+  if (!claimed.ok) return claimed;
+  if (claimed.reused) return { ok: true, message: claimed.message, reused: true };
   const intent = writeDeliveryIntent(message);
   if (!intent.ok) return intent;
   const written = writeMessageExclusive(message);
   if (!written.ok) return written;
   if (!written.message.acknowledgedAt) {
-    writeJsonAtomic(queuePath(to, id), { id, to });
+    writeJsonAtomic(queuePath(message.to, written.message.id), { id: written.message.id, to: message.to });
   }
   try {
-    fs.unlinkSync(deliveryPath(to, id));
-    syncDirectory(path.join(DELIVERY_ROOT, to));
+    fs.unlinkSync(deliveryPath(message.to, message.id));
+    syncDirectory(path.join(DELIVERY_ROOT, message.to));
   }
   catch (error) { return { ok: false, error: `message delivered but delivery journal could not close: ${error.message}` }; }
   return { ok: true, message: written.message, reused: written.reused || intent.reused || false };
+}
+
+function importRelayMessage(message) {
+  if (!message || message.protocol !== 'repos.chat/1' || message.version !== 3) {
+    return { ok: false, error: 'unsupported relay message' };
+  }
+  if (message.kind === 'request') return { ok: false, error: 'relay import accepts notice and response only' };
+  if (!MESSAGE_KINDS.has(message.kind)) return { ok: false, error: 'unsupported message kind' };
+  if (!safeRepoId(message.from) || !safeRepoId(message.to) || !safeMessageId(message.id)) {
+    return { ok: false, error: 'remote message has an unsafe id' };
+  }
+  if (!message.clientMessageId || !safeMessageId(message.clientMessageId)) {
+    return { ok: false, error: 'remote message is missing client_message_id' };
+  }
+  if (!message.subject || !message.body) return { ok: false, error: 'remote message requires subject and body' };
+  if (message.target?.kind === 'repo' && !findRepo(findManifests(ROOT, DEPTH), message.to)) {
+    return { ok: false, error: `no local manifest for ${message.to}` };
+  }
+  return commitMessage(message);
 }
 
 function send(repos) {
@@ -1121,6 +1209,7 @@ function send(repos) {
     state,
     host: hostName ? { name: hostName, ...(hostModel ? { model: hostModel } : {}) } : null,
     expiresAt,
+    clientMessageId: option('client-message-id'),
     id: process.env.REPOS_CHAT_AGENT_HOST === '1'
       ? process.env.REPOS_CHAT_INTERNAL_MESSAGE_ID || null
       : null,
@@ -1144,6 +1233,19 @@ function inbox(repos) {
   const staleDays = staleDaysOption();
   if (staleDays === null) return 1;
   const messages = readInbox(repo, hasFlag('all'));
+  if (hasFlag('mark-seen')) {
+    const host = option('host') || 'mcp';
+    const session = option('session') || 'stdio';
+    if (!/^[A-Za-z0-9._-]+$/.test(host) || !/^[A-Za-z0-9._-]{1,80}$/.test(session)) {
+      console.error('inbox --mark-seen requires a safe --host and --session');
+      return 1;
+    }
+    for (const message of messages) {
+      if (!message.acknowledgedAt && safeMessageId(message.id)) {
+        try { recordSeen(ROOT, message.receiptRepo || repo, message.id, { host, session }); } catch { /* a bad receipt must not hide the inbox */ }
+      }
+    }
+  }
   if (hasFlag('json')) {
     console.log(JSON.stringify({
       repo,
@@ -1311,7 +1413,19 @@ function installClaudeHook(repos) {
     console.error(`refusing to overwrite unreadable settings: ${err.message}`);
     return 1;
   }
-  const command = event => `node "${slash(path.join(HERE, OUR_HOOK))}" --root "${slash(path.resolve(ROOT))}" --repo ${repoId(current)} --event ${event}`;
+  const agent = option('agent');
+  if (agent && !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(agent)) {
+    console.error('hook --agent must be a safe agent id');
+    return 1;
+  }
+  const command = event => formatHookCommand({
+    hookPath: path.join(HERE, OUR_HOOK),
+    root: path.resolve(ROOT),
+    repo: repoId(current),
+    event,
+    host: 'claude',
+    agent,
+  });
   settings.hooks = settings.hooks && typeof settings.hooks === 'object' ? settings.hooks : {};
   for (const event of ['UserPromptSubmit', 'SessionStart']) {
     // Drop only entries that run this hook, so other hooks are untouched and
@@ -1402,7 +1516,20 @@ function acknowledge(repos) {
     console.error(`message ${id} does not belong to ${repo}`);
     return 1;
   }
-  if (!message.acknowledgedAt) message.acknowledgedAt = new Date().toISOString();
+  const by = option('by');
+  const session = option('session');
+  if (by && !/^[A-Za-z0-9._-]+$/.test(by)) {
+    console.error('ack --by contains unsupported characters');
+    return 1;
+  }
+  if (session && !/^[A-Za-z0-9._-]{1,80}$/.test(session)) {
+    console.error('ack --session contains unsupported characters');
+    return 1;
+  }
+  if (!message.acknowledgedAt) {
+    message.acknowledgedAt = new Date().toISOString();
+    message.acknowledgedBy = { repo, ...(by ? { host: by } : {}), ...(session ? { session } : {}) };
+  }
   writeJsonAtomic(dest, message);
   try {
     fs.unlinkSync(queuePath(repo, id));
@@ -1648,11 +1775,29 @@ function help() {
   repos conversation --root DIR --id MESSAGE_OR_CONVERSATION_ID [--json]
   repos sent    --root DIR --repo REPO [--json] [--all]   queued, seen, or acked
   repos focus   --root DIR [--repo REPO] [--stale-days N] [--json]
-  repos hook claude --root DIR --repo REPO [--shared] [--remove]
+  repos hook claude --root DIR --repo REPO [--agent AGENT] [--shared] [--remove]
   repos mcp install --root DIR --repo REPO [--shared]
+  repos identity init --agent ID [--file PATH]
+  repos identity show [--file PATH]
+  repos relay serve [--data DIR] [--host HOST] [--port PORT] [--store file|memory|sqlite]
+  repos relay register [--repo REPO ...] [--webhook URL]
+  repos relay send --to agent:ID|session:ID|repo:NAME --subject TEXT --body TEXT
+                [--from-repo REPO] [--client-message-id ID] [--reply-to ID]
+  repos relay sync [--session ID]
+  repos relay watch [--once] [--timeout-ms N] [--session ID] [--claude-print]
+                [--on-mail PROGRAM --on-mail-arg ARG]
+  repos relay inbox [--session ID] [--all]
+  repos relay ack --id CLIENT_MESSAGE_ID [--by HOST] [--session ID]
 
-send also takes --expires-in 7d or --expires-at ISO_TIME. inbox, sent, and
-focus flag messages open 7+ days (--stale-days N) and expired ones.
+send also takes --expires-in 7d, --expires-at ISO_TIME, and
+--client-message-id so a retry is the same message. inbox, sent, and focus
+flag messages open 7+ days (--stale-days N) and expired ones. inbox --mark-seen
+records a seen receipt. ack --by and --session record who acknowledged.
+
+Relay commands need REPOS_RELAY_URL and REPOS_RELAY_TOKEN. Identity comes from
+REPOS_AGENT_ID plus REPOS_AGENT_PRIVATE_KEY, or from the user profile key file.
+The relay carries notices and responses. Work requests still need local human
+approval. repos relay serve refuses to listen off loopback without TLS.
 
 An assigned Repo Rep has a valid repos.yaml identity and at least one local
 instruction file. A live watcher lease makes it proactive and observable.
@@ -1666,6 +1811,16 @@ repos-mcp --root DIR --as REPO to give a live agent session these as tools.`);
 /* ---------- run ---------------------------------------------------------- */
 if (cmd === 'help' || cmd === '--help' || hasFlag('help')) {
   process.exit(help());
+}
+if (cmd === 'identity') {
+  process.exit(runIdentity(args, { packageRoot: HERE, workspace: path.resolve(ROOT) }));
+}
+if (cmd === 'relay') {
+  process.exit(await runRelay(args, {
+    packageRoot: HERE,
+    workspace: path.resolve(ROOT),
+    importRepoMessage: importRelayMessage,
+  }));
 }
 const repos = findManifests(ROOT, DEPTH);
 if (!repos.length) {

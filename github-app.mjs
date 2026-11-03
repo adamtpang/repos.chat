@@ -73,7 +73,9 @@ function git(dir, gitArgs) {
 }
 
 function parseRemote(value) {
-  const https = value.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?$/i);
+  // Userinfo is ignored. Credential helpers rewrite https://github.com/ to
+  // https://x-access-token@github.com/ and that token must never be kept.
+  const https = value.match(/^https:\/\/(?:[^@/]+@)?github\.com\/([^/]+)\/([^/]+?)(?:\.git)?$/i);
   const ssh = value.match(/^(?:git@github\.com:|ssh:\/\/git@github\.com\/)([^/]+)\/([^/]+?)(?:\.git)?$/i);
   const match = https || ssh;
   if (!match) fail('origin must be a github.com HTTPS or SSH repository URL');

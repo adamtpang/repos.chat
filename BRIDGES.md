@@ -37,10 +37,15 @@ Three of the four constrain their final answer to a JSON schema, which is why on
 
 - Codex: a real `codex exec` call with the completion schema returned a valid answer in 26 seconds on 2026-11-01.
 - Claude and Grok: the adapters pass tests against fake CLIs that mirror their documented output shapes. A real run still needs `claude /login` and `grok login` on the host machine, and the exact JSON wrapper each emits should be confirmed on that first run.
+- Two machines: `repos relay` is covered by tests that start a local relay, exchange a signed message and a reply between two identities, reject a spoofed sender, dedupe a retry, and fire one webhook wake. A real Claude session on Windows and a Grok Bot routine on Linux have not been run; the steps are in [VERIFY.md](VERIFY.md).
+
+## What the relay copies, and what it refuses
+
+Addressing is one `agent:<id>`, `session:<id>`, or `repo:<name>` target, the shape used by [a2a-bridge](https://github.com/firstintent/a2a-bridge) (MIT). The idea is copied. The package is not a dependency. Wake is a webhook the relay POSTs, which is how a Grok Bot routine can be started, plus an opt-in local watcher for Claude Code. Work requests still stop at human approval. The relay transports notices and responses only.
 
 ## Deliberately not taken
 
 - **Auto-approve presets** (`clink`, codex-as-mcp). A message is a request, never authority.
-- **Direct agent-to-agent work requests** (Agent Mail). Work goes through proposal and human approval.
-- **A coordination daemon** (Agent Mail's server). Files are enough at one-workspace scale.
-- **Push delivery.** The watcher polls; no local prior art pushes without a resident process either.
+- **Direct agent-to-agent work requests** (Agent Mail). Work goes through proposal and human approval. The relay does not carry a raw request.
+- **A required coordination daemon** (Agent Mail's server). Files are still the whole protocol on one machine. The relay is only for machines that do not share a disk.
+- **Push into an open Claude prompt.** The hook still runs on the next user prompt. `repos relay watch --claude-print` is opt-in and starts a separate `claude -p` turn.

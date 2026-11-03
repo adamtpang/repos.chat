@@ -201,7 +201,7 @@ test('the MCP server lets a live session propose work but never approve it', asy
 
     const { result: list } = await alpha.request('tools/list', {});
     const names = list.tools.map(t => t.name).sort();
-    assert.deepEqual(names, ['repos_ack', 'repos_conversation', 'repos_graph', 'repos_inbox', 'repos_proposals', 'repos_propose', 'repos_send', 'repos_sent', 'repos_whoami']);
+    assert.deepEqual(names, ['repos_ack', 'repos_conversation', 'repos_graph', 'repos_inbox', 'repos_proposals', 'repos_propose', 'repos_relay_send', 'repos_send', 'repos_sent', 'repos_whoami']);
     assert.equal(names.some(name => /approve/.test(name)), false, 'no tool can approve');
 
     const me = await alpha.call('repos_whoami');
