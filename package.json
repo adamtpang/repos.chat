@@ -33,6 +33,7 @@
     "desktop-submit.ps1",
     "DESKTOP_SUBMISSION.md",
     "codex-connection.mjs",
+    "claude-connection.mjs",
     "local-bridge.mjs",
     "LOCAL_BRIDGE.md",
     "queue-ui",

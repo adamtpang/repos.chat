@@ -25,7 +25,7 @@ export function checkout(cwd) {
 }
 export function snapshot(raw, expectedCheckout, observedAt = stamp()) {
   const data = unwrap(raw), thread = data.thread;
-  assert(thread?.kind === 'codex' && thread.hostId === 'local', 'Only local Codex tasks are supported');
+  assert(['codex', 'claude'].includes(thread?.kind) && thread.hostId === 'local', 'Only local Codex tasks and Claude Code sessions are supported');
   const verified = checkout(thread.cwd), expected = checkout(expectedCheckout);
   assert(verified.common === expected.common, 'Session belongs to a different repository');
   assert(data.page?.order === 'newest_first', 'Expected supported read_thread newest-first response');
@@ -39,7 +39,7 @@ export function snapshot(raw, expectedCheckout, observedAt = stamp()) {
     : ['idle','notLoaded'].includes(runtime) && ['completed','failed','interrupted'].includes(latest?.status) ? (latest.status === 'completed' ? 'completed' : 'waiting') : 'unknown';
   const sourceTimestamp = latest?.completedAt || latest?.startedAt || thread.updatedAt;
   const card = {
-    id: `codex:${thread.hostId}:${thread.id}`, provider: 'codex-desktop', threadId: thread.id,
+    id: `${thread.kind}:${thread.hostId}:${thread.id}`, provider: `${thread.kind}-desktop`, threadId: thread.id,
     hostId: thread.hostId, title: thread.title, checkout: verified,
     state, runtime, sourceTimestamp: sourceTimestamp ? new Date(sourceTimestamp * 1000).toISOString() : null,
     observedAt, turnId: latest?.id || null, turnStatus: latest?.status || 'unknown',
@@ -178,7 +178,8 @@ export class Queue {
       const card = state.cards.find(x => x.id === r.cardId);
       assert(JSON.stringify(checkout(data.thread.cwd)) === JSON.stringify(card.checkout), 'Checkout changed in delivery read-back');
       const matchesPrompt = item => {
-        if (item.type === 'userMessage') return (data.nativeSource !== 'codex-app-server' || item.clientId === r.receiptId) && item.content?.filter(c => c.type === 'text').map(c => c.text).join('') === r.prompt;
+        // Bridged sessions carry the claim's receipt as the message's client ID; text alone is not proof.
+        if (item.type === 'userMessage') return (!['codex-app-server', 'claude-session'].includes(data.nativeSource) || item.clientId === r.receiptId) && item.content?.filter(c => c.type === 'text').map(c => c.text).join('') === r.prompt;
         // Desktop task-to-task delivery is a tool-result envelope, not a userMessage.
         if (item.type !== 'functionCallOutput' || item.namespace !== 'codex_app' || item.name !== 'send_message_to_thread' || item.output?.truncated || !r.senderThreadId) return false;
         const match = item.output?.text?.match(/^<codex_delegation>\s*<source_thread_id>([^<]+)<\/source_thread_id>\s*<input>([\s\S]*)<\/input>\s*<\/codex_delegation>$/);
@@ -206,6 +207,6 @@ export class Queue {
       };
     });
     cards.sort((a,b) => Number(b.attention) - Number(a.attention) || Number(!!a.blockedBy.length) - Number(!!b.blockedBy.length) || b.priority - a.priority || a.id.localeCompare(b.id));
-    return { cards, requests: state.requests, current: cards.find(x => x.attention) || null, adapter: 'Codex desktop task relay; refresh and dispatch require an active relay task. Claude unsupported.' };
+    return { cards, requests: state.requests, current: cards.find(x => x.attention) || null, adapter: 'Codex desktop task relay, or the local bridge for bound Codex and Claude Code sessions; refresh and dispatch require an active relay or bridge.' };
   }
 }
