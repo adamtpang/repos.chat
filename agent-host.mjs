@@ -350,10 +350,156 @@ for ($pass = 0; $pass -lt 3; $pass++) {
   }
 }
 
+// A one-shot PowerShell sweep takes seconds to start on a busy Windows machine, long
+// enough for a detached descendant to keep working after its agent ends. The reaper is
+// started before the agent, compiles a Toolhelp snapshot once, and then kills a whole
+// process tree in milliseconds when asked. terminateWindowsProcessTree stays as fallback.
+const WINDOWS_REAPER_SCRIPT = String.raw`
+$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+public static class ReposChatReaper {
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+  struct PROCESSENTRY32 {
+    public uint dwSize; public uint cntUsage; public uint th32ProcessID; public IntPtr th32DefaultHeapID;
+    public uint th32ModuleID; public uint cntThreads; public uint th32ParentProcessID; public int pcPriClassBase;
+    public uint dwFlags; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string szExeFile;
+  }
+  [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr CreateToolhelp32Snapshot(uint flags, uint pid);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern bool Process32FirstW(IntPtr snap, ref PROCESSENTRY32 entry);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern bool Process32NextW(IntPtr snap, ref PROCESSENTRY32 entry);
+  [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+  static Dictionary<uint, List<uint>> Children() {
+    var map = new Dictionary<uint, List<uint>>();
+    IntPtr snap = CreateToolhelp32Snapshot(2, 0);
+    if (snap == IntPtr.Zero || snap == new IntPtr(-1)) return map;
+    var entry = new PROCESSENTRY32();
+    entry.dwSize = (uint)Marshal.SizeOf(typeof(PROCESSENTRY32));
+    if (Process32FirstW(snap, ref entry)) {
+      do {
+        List<uint> list;
+        if (!map.TryGetValue(entry.th32ParentProcessID, out list)) { list = new List<uint>(); map[entry.th32ParentProcessID] = list; }
+        list.Add(entry.th32ProcessID);
+      } while (Process32NextW(snap, ref entry));
+    }
+    CloseHandle(snap);
+    return map;
+  }
+  public static int KillTree(uint root) {
+    int killed = 0;
+    for (int pass = 0; pass < 3; pass++) {
+      var children = Children();
+      var targets = new List<uint> { root };
+      var seen = new HashSet<uint> { root };
+      for (int i = 0; i < targets.Count; i++) {
+        List<uint> list;
+        if (children.TryGetValue(targets[i], out list)) foreach (var child in list) if (seen.Add(child)) targets.Add(child);
+      }
+      for (int i = targets.Count - 1; i >= 0; i--) {
+        try { using (var process = Process.GetProcessById((int)targets[i])) { process.Kill(); killed++; } } catch {}
+      }
+      System.Threading.Thread.Sleep(50);
+    }
+    return killed;
+  }
+}
+'@
+[Console]::Out.WriteLine('ready')
+[Console]::Out.Flush()
+while ($null -ne ($line = [Console]::In.ReadLine())) {
+  if ($line -match '^kill (\d+)$') {
+    $count = [ReposChatReaper]::KillTree([uint32]$Matches[1])
+    [Console]::Out.WriteLine("done $count")
+    [Console]::Out.Flush()
+  }
+}
+`;
+
+function startWindowsReaper(readyTimeoutMs = 30_000) {
+  return new Promise(resolve => {
+    let proc;
+    try {
+      proc = spawn('powershell.exe', [
+        '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+        '-EncodedCommand', Buffer.from(WINDOWS_REAPER_SCRIPT, 'utf16le').toString('base64'),
+      ], { windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'], shell: false });
+    } catch {
+      resolve(null);
+      return;
+    }
+    let buffer = '', ready = false, waiter = null, chain = Promise.resolve();
+    const settleWaiter = ok => {
+      if (!waiter) return;
+      const done = waiter;
+      waiter = null;
+      done(ok);
+    };
+    const fail = () => {
+      clearTimeout(readyTimer);
+      if (!ready) resolve(null);
+      settleWaiter(false);
+    };
+    const readyTimer = setTimeout(() => {
+      try { proc.kill(); } catch {}
+      fail();
+    }, readyTimeoutMs);
+    proc.once('error', fail);
+    proc.once('exit', fail);
+    proc.stdin.on('error', () => {});
+    const killOnce = pid => new Promise(done => {
+      if (proc.exitCode !== null || !proc.stdin.writable) {
+        done(false);
+        return;
+      }
+      const timer = setTimeout(() => settleWaiter(false), 10_000);
+      waiter = ok => {
+        clearTimeout(timer);
+        done(ok);
+      };
+      proc.stdin.write(`kill ${pid}\n`);
+    });
+    const reaper = {
+      kill(pid) {
+        const next = chain.then(() => killOnce(pid));
+        chain = next.catch(() => false);
+        return next;
+      },
+      close() {
+        try { proc.stdin.end(); } catch {}
+      },
+    };
+    proc.stdout.setEncoding('utf8');
+    proc.stdout.on('data', chunk => {
+      buffer += chunk;
+      let newline;
+      while ((newline = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, newline).trim();
+        buffer = buffer.slice(newline + 1);
+        if (!ready && line === 'ready') {
+          ready = true;
+          clearTimeout(readyTimer);
+          resolve(reaper);
+        } else if (line.startsWith('done')) {
+          settleWaiter(true);
+        }
+      }
+    });
+  });
+}
+
+async function killWindowsTree(reaper, pid) {
+  if (reaper && await reaper.kill(pid)) return;
+  terminateWindowsProcessTree(pid);
+}
+
 async function runHostProcess(invocation, repoPath, writeCapable, maintainLease) {
   if (writeCapable && containmentPlatform !== 'win32') {
     throw new Error('write-capable branch-pr requests require strong process containment; this host currently fails closed on POSIX');
   }
+  const reaper = process.platform === 'win32' ? await startWindowsReaper() : null;
   return new Promise(resolve => {
     const child = spawn(invocation.bin, invocation.args, {
       cwd: repoPath,
@@ -369,6 +515,7 @@ async function runHostProcess(invocation, repoPath, writeCapable, maintainLease)
       settled = true;
       clearTimeout(timer);
       clearInterval(leaseTimer);
+      if (reaper) reaper.close();
       resolve(value);
     };
     const finish = value => {
@@ -384,8 +531,7 @@ async function runHostProcess(invocation, repoPath, writeCapable, maintainLease)
         return;
       }
       if (process.platform === 'win32') {
-        terminateWindowsProcessTree(child.pid);
-        finalize(value);
+        killWindowsTree(reaper, child.pid).then(() => finalize(value), () => finalize(value));
         return;
       }
       try { process.kill(-child.pid, 0); }
@@ -405,7 +551,7 @@ async function runHostProcess(invocation, repoPath, writeCapable, maintainLease)
       if (terminationError || settled) return;
       terminationError = error;
       if (process.platform === 'win32') {
-        terminateWindowsProcessTree(child.pid);
+        killWindowsTree(reaper, child.pid).catch(() => {});
         return;
       }
       try { process.kill(-child.pid, 'SIGTERM'); } catch {}
