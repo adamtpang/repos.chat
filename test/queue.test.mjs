@@ -66,7 +66,7 @@ test('active, stale, changed and unsupported sessions cannot dispatch', async t 
   assert.equal(sends, 0);
   const stale = snapshot(f.read(), f.root, new Date(Date.now()-120000).toISOString());
   assert.throws(() => f.queue.ingest(stale), /Out-of-order/);
-  const other = f.read(); other.thread.kind = 'claude'; assert.throws(() => snapshot(other, f.root), /Only local Codex/);
+  const other = f.read(); other.thread.kind = 'grok'; assert.throws(() => snapshot(other, f.root), /Only local Codex/);
   const changed = snapshot(f.read('idle', 'another-turn'), f.root); f.queue.ingest(changed);
   assert.throws(() => f.queue.claim(r.id), /changed/);
 });

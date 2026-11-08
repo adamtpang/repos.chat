@@ -15,13 +15,15 @@ export const chapterSchema = {
 };
 // Explicit normalization of app-server evidence into the existing queue contract.
 // The original provider response remains attached to every delivery reconciliation.
-export function nativeEvidence(thread) {
-  return {thread:{...thread,kind:'codex',hostId:'local',title:thread.name || thread.preview || path.basename(thread.cwd)},page:{order:'newest_first'},turns:[...(thread.turns||[])].reverse(),nativeSource:'codex-app-server',nativeThread:thread};
+export const SOURCES={codex:'codex-app-server',claude:'claude-session'};
+export function nativeEvidence(thread,kind='codex') {
+  return {thread:{...thread,kind,hostId:'local',title:thread.name || thread.preview || path.basename(thread.cwd)},page:{order:'newest_first'},turns:[...(thread.turns||[])].reverse(),nativeSource:SOURCES[kind],nativeThread:thread};
 }
 export class LocalBridge {
   constructor(queue,{connection=new CodexConnection(),bindings=[],interval=2000}={}) {
     this.queue=queue;this.connection=connection;this.bindings=bindings;this.interval=interval;this.owned=new Set();this.busy=false;this.stopped=false;
-    this.status={connected:false,provider:'codex-app-server',sessions:{}};this.permissions=new Map();
+    this.kind=connection.kind || 'codex';
+    this.status={connected:false,provider:SOURCES[this.kind],sessions:{}};this.permissions=new Map();
   }
   async start() {
     this.connection.on('disconnect',error=>{this.status.connected=false;this.status.error=error.message;});
@@ -60,11 +62,11 @@ export class LocalBridge {
       const page=await this.connection.request('thread/turns/list',{threadId,limit:10,sortDirection:'desc',itemsView:'full'});
       thread.turns=[...page.data].reverse();
     }
-    return nativeEvidence(thread);
+    return nativeEvidence(thread,this.kind);
   }
   async refresh(binding) {
     const evidence=await this.read(binding.threadId);
-    const card={...snapshot(evidence,binding.cwd),provider:'codex-app-server',source:'codex app-server thread/read',bridgeBound:true};
+    const card={...snapshot(evidence,binding.cwd),provider:SOURCES[this.kind],source:this.kind==='claude'?'claude session file':'codex app-server thread/read',bridgeBound:true};
     const old=this.queue.state().cards.find(c=>c.id===card.id);
     if(!old || old.revision!==card.revision || old.result!==card.result || Date.now()-Date.parse(old.observedAt)>30000)this.queue.ingest(card);
     return {card,evidence};
@@ -122,6 +124,6 @@ export function bridgeBindings(root) {
   const file=path.resolve(root,'.repo-connect/bridge-bindings.json');
   if(!fs.existsSync(file))return [];
   const data=JSON.parse(fs.readFileSync(file,'utf8'));
-  if(!Array.isArray(data) || data.some(b=>typeof b.threadId!=='string'||!path.isAbsolute(b.cwd)) || new Set(data.map(b=>b.threadId)).size!==data.length)throw new Error('Invalid bridge bindings');
+  if(!Array.isArray(data) || data.some(b=>typeof b.threadId!=='string'||!path.isAbsolute(b.cwd)||!(b.host===undefined||b.host in SOURCES)) || new Set(data.map(b=>b.threadId)).size!==data.length)throw new Error('Invalid bridge bindings');
   return data;
 }

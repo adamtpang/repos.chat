@@ -8,6 +8,9 @@ provides:
   - id: local-codex-session-bridge
     what: continues explicitly bound Codex sessions through a local app-server connection with native writer ownership and verified request receipts
     at: local-bridge.mjs
+  - id: local-claude-session-bridge
+    what: continues explicitly bound Claude Code sessions with claude --resume, refusing any session another live Claude process holds, and proves delivery by the prompt's stored message uuid
+    at: claude-connection.mjs
   - id: private-conversation-queue
     what: local decision cards and durable approved requests for an active Codex desktop task relay
     at: queue.mjs

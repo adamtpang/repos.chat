@@ -34,7 +34,7 @@ function render() {
   for (const other of data.cards) {
     const button = node('button', '', `companion${other.id === card?.id ? ' selected' : ''}`); button.setAttribute('aria-pressed', String(other.id === card?.id));
     const connection=data.bridge?.sessions?.[other.threadId];
-    const connectionLabel=connection?.state==='unavailable' ? 'Open in Codex desktop' : connection ? `Connected · ${statusLabel(other)}` : statusLabel(other);
+    const connectionLabel=connection?.state==='unavailable' ? data.bridge.provider==='claude-session' ? 'Close it in Claude first' : 'Open in Codex desktop' : connection ? `Connected · ${statusLabel(other)}` : statusLabel(other);
     const text = node('span', '', 'companion-copy'); text.append(node('strong', repoName(other)), node('small', connectionLabel)); button.append(pet(other, true), text);
     button.onclick = () => visit(other.id); $('remaining').append(button);
   }

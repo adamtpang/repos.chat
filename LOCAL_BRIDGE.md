@@ -31,10 +31,28 @@ Run the bridge in a terminal and press Ctrl+C for normal shutdown. A local authe
 
 `.repo-connect/bridge.lock` prevents two local bridges. After a crash, inspect the recorded PID and stop any surviving owned app-server before removing a stale bridge lock. Never remove a live lock. Restart with the same bindings and journal: uncertain requests are reconciled, not resent. No OS login service or scheduled startup is installed.
 
+## Claude Code sessions
+
+The same bridge can continue an existing Claude Code session instead of a Codex task:
+
+```sh
+node queue.mjs bind --host claude --thread EXISTING_SESSION_ID --checkout /absolute/path/to/orchard
+npm run bridge
+```
+
+One bridge drives one provider, so keep Claude and Codex bindings under separate `--root` folders. `claude-connection.mjs` gives the bridge the same contract it has with Codex:
+
+- **Same session.** Each approved request runs `claude -p --resume <id>` in the session's own checkout, so the session keeps its history, model, permissions and instructions. Nothing is overridden, and print mode declines tool permissions it was not already granted.
+- **Single writer.** Claude has no native writer lease. Every live Claude process registers its session in `~/.claude/sessions/<pid>.json`, so the bridge refuses to own, or start a turn in, a session any other live process holds, including one open in Claude Desktop. Close the session there first. Opening it in Claude while the bridge is running a turn is not blocked by Claude itself, so don't.
+- **Exact receipt.** The prompt is sent as a stream-json message whose `uuid` is the claim's receipt ID, and Claude stores it under that uuid. Delivery is accepted only when read-back of the session file finds that uuid with the exact prompt text in a new turn. A crash or lost response stays uncertain and is reconciled, never resent.
+- **Structured chapter.** The `--json-schema` result is read back from the session's `StructuredOutput` call, so a restarted bridge recovers it from disk.
+
+Verified against Claude Code 2.1.319 on Windows with a real bound session: one approved request, one delivery, a matching receipt, and the structured result returned to the queue.
+
 ## Scope of this milestone
 
 Verified against the installed Codex CLI 0.153.4 on Windows. Its managed-daemon lifecycle is Unix-only, so this bridge uses private stdio rather than attaching to the desktop's private process transport. Independent app-server `notLoaded` status is not proof that a desktop task is idle; the native writer lock is required.
 
-The bridge uses the normal CLI configuration. Desktop-only injected tools are not inherited. It cannot simultaneously drive a task still owned by the desktop, and it does not yet replace every desktop feature. Claude Code and Claude Desktop are not connected. The connection is persistent for the lifetime of this local service, not an OS startup service.
+The bridge uses the normal CLI configuration. Desktop-only injected tools are not inherited. It cannot simultaneously drive a task still owned by the desktop, and it does not yet replace every desktop feature. Claude Code sessions connect through the section above. The connection is persistent for the lifetime of this local service, not an OS startup service.
 
 Tests cover exact delivery, result import, lost-response reconciliation, writer exclusion, pending permissions, structured chapters, and existing queue guards. A private real-session test additionally proved history recall after closing and reopening the connection, then browser approval, automatic dispatch, and a structured result in that same session. Public examples are fictional.
