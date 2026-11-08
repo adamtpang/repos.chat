@@ -2,6 +2,12 @@
 
 All notable changes to repos.chat are documented here.
 
+## [Unreleased]
+
+### Added
+
+- The local bridge continues bound Claude Code sessions as well as Codex tasks. `node queue.mjs bind --host claude` binds an existing session. An approved request runs `claude -p --resume` in that same session. The bridge refuses any session another live Claude process holds, and accepts delivery only when the prompt's stored message uuid matches the claim's receipt.
+
 ## [0.6.0] - 2026-11-03
 
 ### Added

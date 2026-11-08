@@ -103,7 +103,7 @@ export function extractResult(name, stdout) {
   throw new HostError(`${name} produced no result matching the completion contract`);
 }
 
-function binFor(name) {
+export function binFor(name) {
   const upper = name.toUpperCase();
   let bin = process.env[`REPOS_HOST_${upper}_BIN`] || (name === 'codex' ? process.env.CODEX_BIN : null);
   const rawArgs = process.env[`REPOS_HOST_${upper}_BIN_ARGS`] || (name === 'codex' ? process.env.CODEX_BIN_ARGS : null);
