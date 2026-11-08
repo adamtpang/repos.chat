@@ -191,7 +191,8 @@ test('identity keys are refused inside a repository and are not printed', () => 
   assert.equal(created.stdout, undefined);
   const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
   assert.equal(saved.agentId, 'bubba');
-  assert.equal((fs.statSync(file).mode & 0o777), 0o600);
+  // Windows has no POSIX mode bits (stat reports 0o666); identity.mjs relies on the user profile ACL there.
+  if (process.platform !== 'win32') assert.equal((fs.statSync(file).mode & 0o777), 0o600);
   const shown = jsonRun(workspace, ['identity', 'show', '--file', file]);
   assert.equal(shown.publicKey, saved.publicKey);
   assert.equal(shown.privateKey, undefined);

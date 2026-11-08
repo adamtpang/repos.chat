@@ -2,6 +2,18 @@
 
 All notable changes to repos.chat are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- Windows: an agent's detached descendant could keep running for several seconds after the agent finished or timed out, because each cleanup started a fresh PowerShell and a slow process query. The host now starts one reaper before the agent and kills the whole tree from a native process snapshot in milliseconds, falling back to the old sweep if the reaper is unavailable.
+- Windows: `repos relay` commands could abort with exit 0xC0000409 when the process exited while fetch sockets were still closing. Relay commands now set the exit code and let Node shut down normally.
+- Website: on phones the Repo Rep network diagram was wider than the screen, so the center card sat off to the right and two reps were cut off. It now fits the screen at every width, and the header shows v0.6.
+
+### Changed
+
+- Website: added the shared fleet PostHog snippet (pageviews and page leaves only; no autocapture, session recording, or surveys).
+
 ## [0.6.0] - 2026-11-03
 
 ### Added

@@ -427,6 +427,11 @@ button {
   fill: none;
 }
 
+.wire,
+.signal {
+  vector-effect: non-scaling-stroke;
+}
+
 .wire {
   stroke: #c3cad9;
   stroke-width: 1.5;
@@ -1208,6 +1213,8 @@ button:focus-visible {
   }
 
   .network-stage {
+    /* With the desktop ratio, a min-height forces the stage wider than a phone. */
+    aspect-ratio: auto;
     min-height: 450px;
   }
 

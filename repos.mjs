@@ -1816,35 +1816,38 @@ if (cmd === 'identity') {
   process.exit(runIdentity(args, { packageRoot: HERE, workspace: path.resolve(ROOT) }));
 }
 if (cmd === 'relay') {
-  process.exit(await runRelay(args, {
+  // Set exitCode instead of calling process.exit(): exiting while fetch sockets are
+  // still closing aborts Node on Windows (libuv UV_HANDLE_CLOSING, exit 0xC0000409).
+  process.exitCode = await runRelay(args, {
     packageRoot: HERE,
     workspace: path.resolve(ROOT),
     importRepoMessage: importRelayMessage,
-  }));
+  });
+} else {
+  const repos = findManifests(ROOT, DEPTH);
+  if (!repos.length) {
+    console.log(`no repos.yaml found under ${ROOT}`);
+    process.exit(0);
+  }
+  if (!['send', 'inbox', 'ack', 'context', 'status', 'graph', 'trigger', 'proposals', 'approve', 'validate-request', 'conversation', 'sent', 'focus', 'hook', 'mcp'].includes(cmd)) {
+    console.log(`${C.d}${repos.length} manifests under ${ROOT}${C.x}\n`);
+  }
+  const code = cmd === 'sync' ? sync(repos)
+    : cmd === 'graph' ? graph(repos)
+    : cmd === 'send' ? send(repos)
+    : cmd === 'inbox' ? inbox(repos)
+    : cmd === 'ack' ? acknowledge(repos)
+    : cmd === 'validate-request' ? validateRequest(repos)
+    : cmd === 'trigger' ? trigger(repos)
+    : cmd === 'proposals' ? listProposals(repos)
+    : cmd === 'approve' ? approve(repos)
+    : cmd === 'context' ? context(repos)
+    : cmd === 'conversation' ? conversation()
+    : cmd === 'sent' ? sentMessages(repos)
+    : cmd === 'focus' ? focus(repos)
+    : cmd === 'hook' ? installClaudeHook(repos)
+    : cmd === 'mcp' ? installMcp(repos)
+    : cmd === 'status' ? status(repos)
+    : verify(repos);
+  process.exit(code);
 }
-const repos = findManifests(ROOT, DEPTH);
-if (!repos.length) {
-  console.log(`no repos.yaml found under ${ROOT}`);
-  process.exit(0);
-}
-if (!['send', 'inbox', 'ack', 'context', 'status', 'graph', 'trigger', 'proposals', 'approve', 'validate-request', 'conversation', 'sent', 'focus', 'hook', 'mcp'].includes(cmd)) {
-  console.log(`${C.d}${repos.length} manifests under ${ROOT}${C.x}\n`);
-}
-const code = cmd === 'sync' ? sync(repos)
-  : cmd === 'graph' ? graph(repos)
-  : cmd === 'send' ? send(repos)
-  : cmd === 'inbox' ? inbox(repos)
-  : cmd === 'ack' ? acknowledge(repos)
-  : cmd === 'validate-request' ? validateRequest(repos)
-  : cmd === 'trigger' ? trigger(repos)
-  : cmd === 'proposals' ? listProposals(repos)
-  : cmd === 'approve' ? approve(repos)
-  : cmd === 'context' ? context(repos)
-  : cmd === 'conversation' ? conversation()
-  : cmd === 'sent' ? sentMessages(repos)
-  : cmd === 'focus' ? focus(repos)
-  : cmd === 'hook' ? installClaudeHook(repos)
-  : cmd === 'mcp' ? installMcp(repos)
-  : cmd === 'status' ? status(repos)
-  : verify(repos);
-process.exit(code);
